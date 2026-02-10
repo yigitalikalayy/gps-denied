@@ -77,6 +77,8 @@ def main() -> int:
     axis_swap_xy = bool(flow_cfg.get("axis_swap_xy", True))
     axis_sign_x = float(flow_cfg.get("axis_sign_x", 1.0))
     axis_sign_y = float(flow_cfg.get("axis_sign_y", -1.0))
+    quality_ema_alpha = float(flow_cfg.get("quality_ema_alpha", 0.0))
+    quality_ema_alpha = max(0.0, min(1.0, quality_ema_alpha))
 
     gyro_sign_x = float(gyro_cfg.get("axis_sign_x", 1.0))
     gyro_sign_y = float(gyro_cfg.get("axis_sign_y", 1.0))
@@ -127,6 +129,12 @@ def main() -> int:
         lidar_poll_hz = float(lidar_cfg.get("poll_hz", 50))
     else:
         lidar_poll_hz = 0.0
+    lidar_filter_cfg = lidar_cfg.get("filter", {}) if isinstance(lidar_cfg.get("filter", {}), dict) else {}
+    lidar_min_m = float(lidar_filter_cfg.get("min_m", 0.2))
+    lidar_max_m = float(lidar_filter_cfg.get("max_m", 50.0))
+    lidar_max_speed = float(lidar_filter_cfg.get("max_speed_m_s", 5.0))
+    lidar_ema_alpha = float(lidar_filter_cfg.get("ema_alpha", 0.0))
+    lidar_ema_alpha = max(0.0, min(1.0, lidar_ema_alpha))
 
     t0_mono = time.monotonic()
     t0_time = time.time()
@@ -153,9 +161,15 @@ def main() -> int:
     integrated_zgyro = 0.0
     quality_acc = 0
     quality_n = 0
+    quality_ema = None
 
     last_lidar = None
     last_lidar_t = None
+    last_lidar_valid = None
+    last_lidar_valid_t = None
+    last_lidar_used = None
+    last_lidar_used_t = None
+    lidar_ema = None
 
     try:
         while True:
@@ -179,7 +193,17 @@ def main() -> int:
             integrated_x += axis_sign_x * (pix_x / focal_length_px)
             integrated_y += axis_sign_y * (pix_y / focal_length_px)
             integration_us += dt_us
-            quality_acc += int(r.quality_u8)
+            q_raw = int(r.quality_u8)
+            if quality_ema_alpha > 0.0:
+                if quality_ema is None:
+                    quality_ema = float(q_raw)
+                else:
+                    quality_ema += quality_ema_alpha * (q_raw - quality_ema)
+                q_use = int(round(quality_ema))
+            else:
+                q_use = q_raw
+
+            quality_acc += int(q_use)
             quality_n += 1
 
             g = bridge.read_gyro()
@@ -197,8 +221,35 @@ def main() -> int:
                     except Exception:
                         pass
                 if last_lidar is not None and last_lidar_t is not None:
-                    distance_m = float(last_lidar.distance_m)
-                    time_delta_distance_us = int((fr.t_monotonic - last_lidar_t) * 1_000_000)
+                    d_raw = float(last_lidar.distance_m)
+                    t_raw = float(last_lidar.t_monotonic)
+                    valid = True
+                    if d_raw < lidar_min_m or d_raw > lidar_max_m:
+                        valid = False
+                    if (
+                        valid
+                        and last_lidar_valid is not None
+                        and last_lidar_valid_t is not None
+                        and lidar_max_speed > 0.0
+                    ):
+                        dt_lidar = max(1e-3, t_raw - last_lidar_valid_t)
+                        if abs(d_raw - last_lidar_valid) > (lidar_max_speed * dt_lidar):
+                            valid = False
+                    if valid:
+                        last_lidar_valid = d_raw
+                        last_lidar_valid_t = t_raw
+                        if lidar_ema_alpha > 0.0:
+                            if lidar_ema is None:
+                                lidar_ema = d_raw
+                            else:
+                                lidar_ema += lidar_ema_alpha * (d_raw - lidar_ema)
+                            last_lidar_used = float(lidar_ema)
+                        else:
+                            last_lidar_used = d_raw
+                        last_lidar_used_t = t_raw
+                if last_lidar_used is not None and last_lidar_used_t is not None:
+                    distance_m = float(last_lidar_used)
+                    time_delta_distance_us = int((fr.t_monotonic - last_lidar_used_t) * 1_000_000)
 
             now = fr.t_monotonic
             if (now - last_pub_t) >= pub_period and integration_us > 0:
@@ -233,17 +284,28 @@ def main() -> int:
             if (now - last_log_t) >= log_period:
                 last_log_t = now
                 if print_raw_flow:
-                    print(
-                        f"frames={frame_count} fps={fps:6.1f} "
-                        f"q={r.quality_u8:3d} tracked={r.tracked:3d} "
-                        f"dx_px={r.dx_px:+7.3f} dy_px={r.dy_px:+7.3f} "
-                        f"int(rad)=({integrated_x:+.5f},{integrated_y:+.5f}) t_int_us={integration_us:7d} "
-                        f"int_g(rad)=({integrated_xgyro:+.5f},{integrated_ygyro:+.5f},{integrated_zgyro:+.5f}) "
-                        f"g=({g.x_rad_s:+6.3f},{g.y_rad_s:+6.3f},{g.z_rad_s:+6.3f}) "
-                        f"lidar={distance_m:5.2f}m dt_lidar_us={time_delta_distance_us:7d}"
-                    )
+                    if quality_ema_alpha > 0.0:
+                        print(
+                            f"frames={frame_count} fps={fps:6.1f} "
+                            f"q={q_use:3d} q_raw={q_raw:3d} tracked={r.tracked:3d} "
+                            f"dx_px={r.dx_px:+7.3f} dy_px={r.dy_px:+7.3f} "
+                            f"int(rad)=({integrated_x:+.5f},{integrated_y:+.5f}) t_int_us={integration_us:7d} "
+                            f"int_g(rad)=({integrated_xgyro:+.5f},{integrated_ygyro:+.5f},{integrated_zgyro:+.5f}) "
+                            f"g=({g.x_rad_s:+6.3f},{g.y_rad_s:+6.3f},{g.z_rad_s:+6.3f}) "
+                            f"lidar={distance_m:5.2f}m dt_lidar_us={time_delta_distance_us:7d}"
+                        )
+                    else:
+                        print(
+                            f"frames={frame_count} fps={fps:6.1f} "
+                            f"q={q_raw:3d} tracked={r.tracked:3d} "
+                            f"dx_px={r.dx_px:+7.3f} dy_px={r.dy_px:+7.3f} "
+                            f"int(rad)=({integrated_x:+.5f},{integrated_y:+.5f}) t_int_us={integration_us:7d} "
+                            f"int_g(rad)=({integrated_xgyro:+.5f},{integrated_ygyro:+.5f},{integrated_zgyro:+.5f}) "
+                            f"g=({g.x_rad_s:+6.3f},{g.y_rad_s:+6.3f},{g.z_rad_s:+6.3f}) "
+                            f"lidar={distance_m:5.2f}m dt_lidar_us={time_delta_distance_us:7d}"
+                        )
                 else:
-                    print(f"frames={frame_count} fps={fps:6.1f} q={r.quality_u8:3d} lidar={distance_m:5.2f}m")
+                    print(f"frames={frame_count} fps={fps:6.1f} q={q_use:3d} lidar={distance_m:5.2f}m")
 
             prev = fr
     except KeyboardInterrupt:

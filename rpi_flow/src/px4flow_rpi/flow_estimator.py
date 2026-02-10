@@ -15,14 +15,14 @@ class FlowResult:
 
 class OpticalFlowEstimator:
     def __init__(self, cfg: dict[str, Any]) -> None:
-        self._max_features = int(cfg.get("feature_max", 200))
+        self._max_features = int(cfg.get("feature_max", 500))
         self._feature_quality = float(cfg.get("feature_quality", 0.01))
         self._min_distance = int(cfg.get("feature_min_distance", 12))
         self._win_size = int(cfg.get("lk_win_size", 21))
         self._max_level = int(cfg.get("lk_max_level", 3))
         self._mad_k = float(cfg.get("outlier_reject_mad", 3.5))
         self._reseed_every = int(cfg.get("reseed_every_n_frames", 10))
-        self._min_tracked = int(cfg.get("min_tracked_features", 30))
+        self._min_tracked = int(cfg.get("min_tracked_features", 10))
 
         self._frame_idx = 0
         self._p0 = None

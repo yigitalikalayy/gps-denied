@@ -64,8 +64,17 @@ class Camera:
         if backend == "picamera2":
             import numpy as np  # type: ignore
 
-            arr = impl.capture_array("main")  # YUV420
-            gray = arr[:, :, 0]
+            arr = impl.capture_array("main")  # YUV420 or mono
+            if getattr(arr, "ndim", 0) == 3:
+                gray = arr[:, :, 0]
+            elif getattr(arr, "ndim", 0) == 2:
+                # Mono sensors or planar YUV420 can come back 2D; use luma plane.
+                if arr.shape[0] >= self._height:
+                    gray = arr[: self._height, :]
+                else:
+                    gray = arr
+            else:
+                raise RuntimeError(f"unexpected frame shape: {getattr(arr, 'shape', None)}")
             if isinstance(self._roi, list) and len(self._roi) == 4:
                 x, y, w, h = [int(v) for v in self._roi]
                 if w > 0 and h > 0:

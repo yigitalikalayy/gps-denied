@@ -1,7 +1,7 @@
 {
   "serial": {
     "enabled": true,
-    "port": "/dev/ttyAMA1",
+    "port": "/dev/ttyAMA0",
     "baudrate": 921600,
     "sysid": 42,
     "compid": 197,
@@ -17,36 +17,31 @@
     "backend": "picamera2",
     "device": 0,
     "width": 640,
-    "height": 480,
+    "height": 400,
     "fps": 120,
     "grayscale": true,
     "roi": null,
-    "threaded": true,
+    "threaded": false,
     "queue_size": 2,
     "controls": {
-      "AeEnable": false,
-      "ExposureTime": 2500,
-      "AnalogueGain": 4.0,
-      "FrameDurationLimits": [
-        8333,
-        8333
-      ]
+      "AeEnable": true
     }
   },
   "flow": {
     "publish_hz": 50,
-    "focal_length_px": 800.0,
+    "quality_ema_alpha": 0.2,
+    "focal_length_px": 4167.0,
     "axis_swap_xy": true,
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
-    "feature_max": 200,
-    "feature_quality": 0.01,
-    "feature_min_distance": 12,
+    "feature_max": 800,
+    "feature_quality": 0.0005,
+    "feature_min_distance": 3,
     "lk_win_size": 21,
     "lk_max_level": 3,
-    "outlier_reject_mad": 3.5,
+    "outlier_reject_mad": 5.0,
     "reseed_every_n_frames": 10,
-    "min_tracked_features": 30
+    "min_tracked_features": 1
   },
   "gyro": {
     "use_autopilot_imu": true,
@@ -60,6 +55,12 @@
     "i2c_bus": 1,
     "i2c_address": 102,
     "poll_hz": 50,
+    "filter": {
+      "min_m": 0.2,
+      "max_m": 50.0,
+      "max_speed_m_s": 5.0,
+      "ema_alpha": 0.2
+    },
     "ascii": {
       "init_command": "?P",
       "distance_command": "?LDF,0",
