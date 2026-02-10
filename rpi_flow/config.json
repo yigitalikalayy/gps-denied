@@ -1,0 +1,73 @@
+{
+  "serial": {
+    "enabled": true,
+    "port": "/dev/ttyAMA1",
+    "baudrate": 921600,
+    "sysid": 42,
+    "compid": 197,
+    "target_sysid": 1,
+    "target_compid": 1,
+    "request_imu_stream": {
+      "enabled": true,
+      "stream_id": 0,
+      "rate_hz": 200
+    }
+  },
+  "camera": {
+    "backend": "picamera2",
+    "device": 0,
+    "width": 640,
+    "height": 480,
+    "fps": 120,
+    "grayscale": true,
+    "roi": null,
+    "threaded": true,
+    "queue_size": 2,
+    "controls": {
+      "AeEnable": false,
+      "ExposureTime": 2500,
+      "AnalogueGain": 4.0,
+      "FrameDurationLimits": [
+        8333,
+        8333
+      ]
+    }
+  },
+  "flow": {
+    "publish_hz": 50,
+    "focal_length_px": 800.0,
+    "axis_swap_xy": true,
+    "axis_sign_x": 1.0,
+    "axis_sign_y": -1.0,
+    "feature_max": 200,
+    "feature_quality": 0.01,
+    "feature_min_distance": 12,
+    "lk_win_size": 21,
+    "lk_max_level": 3,
+    "outlier_reject_mad": 3.5,
+    "reseed_every_n_frames": 10,
+    "min_tracked_features": 30
+  },
+  "gyro": {
+    "use_autopilot_imu": true,
+    "axis_sign_x": 1.0,
+    "axis_sign_y": 1.0,
+    "axis_sign_z": 1.0
+  },
+  "lidar": {
+    "enabled": true,
+    "backend": "lw20_ascii",
+    "i2c_bus": 1,
+    "i2c_address": 102,
+    "poll_hz": 50,
+    "ascii": {
+      "init_command": "?P",
+      "distance_command": "?LDF,0",
+      "max_read_len": 32
+    }
+  },
+  "logging": {
+    "print_hz": 10,
+    "print_raw_flow": true
+  }
+}

@@ -1,0 +1,7 @@
+numpy
+opencv-python
+pyserial
+smbus2
+# Optional (recommended on Raspberry Pi OS with libcamera)
+picamera2
+
