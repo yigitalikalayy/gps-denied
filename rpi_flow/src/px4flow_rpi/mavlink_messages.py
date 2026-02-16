@@ -50,16 +50,28 @@ class Attitude:
     roll: float
     pitch: float
     yaw: float
+    rollspeed: float
+    pitchspeed: float
+    yawspeed: float
 
     @staticmethod
     def decode(payload: bytes) -> "Attitude":
-        # MAVLink ATTITUDE (id=30), first fields:
-        # time_boot_ms (u32), roll (f), pitch (f), yaw (f)
-        if len(payload) < 16:
+        # MAVLink ATTITUDE (id=30):
+        # time_boot_ms (u32), roll/pitch/yaw (float*3), roll/pitch/yaw speed (float*3)
+        if len(payload) < 28:
             raise ValueError("ATTITUDE payload too short")
         time_boot_ms = struct.unpack_from("<I", payload, 0)[0]
         roll, pitch, yaw = struct.unpack_from("<fff", payload, 4)
-        return Attitude(time_boot_ms=time_boot_ms, roll=roll, pitch=pitch, yaw=yaw)
+        rollspeed, pitchspeed, yawspeed = struct.unpack_from("<fff", payload, 16)
+        return Attitude(
+            time_boot_ms=time_boot_ms,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+            rollspeed=rollspeed,
+            pitchspeed=pitchspeed,
+            yawspeed=yawspeed,
+        )
 
 
 @dataclass

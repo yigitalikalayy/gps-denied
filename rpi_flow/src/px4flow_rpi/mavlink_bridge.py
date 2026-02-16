@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import collections
 import math
+import socket
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
-import serial  # type: ignore
+try:
+    import serial  # type: ignore
+except Exception:  # pragma: no cover - optional in UDP-only SITL
+    serial = None  # type: ignore
 
 from .mavlink_messages import (
     Attitude,
@@ -40,8 +44,19 @@ class ImuYawSample:
 
 class MavlinkBridge:
     def __init__(self, cfg: dict[str, Any]) -> None:
+        self._transport = str(cfg.get("transport", "serial")).strip().lower()
+        if self._transport not in ("serial", "udp"):
+            raise ValueError(f"unsupported mavlink transport: {self._transport}")
+
         self._port = str(cfg.get("port", "/dev/ttyAMA1"))
         self._baud = int(cfg.get("baudrate", 921600))
+        udp_cfg = cfg.get("udp", {}) if isinstance(cfg.get("udp", {}), dict) else {}
+        self._udp_bind_host = str(udp_cfg.get("bind_host", "0.0.0.0"))
+        self._udp_bind_port = int(udp_cfg.get("bind_port", 14555))
+        self._udp_remote_host = str(udp_cfg.get("remote_host", "127.0.0.1"))
+        self._udp_remote_port = int(udp_cfg.get("remote_port", 14550))
+        self._udp_learn_remote = bool(udp_cfg.get("learn_remote_from_rx", True))
+
         self._sysid = int(cfg.get("sysid", 42))
         self._compid = int(cfg.get("compid", 197))
         self._target_sysid = int(cfg.get("target_sysid", 1))
@@ -49,7 +64,22 @@ class MavlinkBridge:
 
         self._seq = 0
         self._parser = Mavlink1Parser()
-        self._ser = serial.Serial(self._port, self._baud, timeout=0.01)
+        self._ser = None
+        self._udp_sock: socket.socket | None = None
+        self._udp_remote: tuple[str, int] | None = None
+        self._udp_remote_lock = threading.Lock()
+
+        if self._transport == "serial":
+            if serial is None:
+                raise RuntimeError("serial transport selected but pyserial is not installed")
+            self._ser = serial.Serial(self._port, self._baud, timeout=0.01)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind((self._udp_bind_host, self._udp_bind_port))
+            sock.settimeout(0.05)
+            self._udp_sock = sock
+            if self._udp_remote_port > 0:
+                self._udp_remote = (self._udp_remote_host, self._udp_remote_port)
 
         self._gyro = GyroState()
         self._gyro_lock = threading.Lock()
@@ -59,6 +89,17 @@ class MavlinkBridge:
         self._yaw_lock = threading.Lock()
 
         self._imu_req_cfg = cfg.get("request_imu_stream", {}) if isinstance(cfg.get("request_imu_stream", {}), dict) else {}
+        imu_source = str(cfg.get("imu_source", "auto")).strip().lower()
+        imu_aliases = {
+            "highres_imu": "highres",
+            "scaled_imu": "scaled",
+            "att": "attitude",
+            "att_msg": "attitude",
+        }
+        imu_source = imu_aliases.get(imu_source, imu_source)
+        if imu_source not in ("auto", "highres", "scaled", "attitude"):
+            imu_source = "auto"
+        self._imu_source = imu_source
         imu_filter_cfg = cfg.get("imu_filter", {}) if isinstance(cfg.get("imu_filter", {}), dict) else {}
         self._gyro_max_rad_s = float(imu_filter_cfg.get("max_rad_s", 50.0))
         self._gyro_max_jump_rad_s = float(imu_filter_cfg.get("max_jump_rad_s", 20.0))
@@ -71,6 +112,18 @@ class MavlinkBridge:
         self._rx_thread.start()
         if bool(self._imu_req_cfg.get("enabled", False)):
             self.request_imu_stream()
+
+    def _uses_imu_source(self, source: str) -> bool:
+        if self._imu_source == "auto":
+            return True
+        return self._imu_source == source
+
+    def _set_udp_remote(self, addr: tuple[str, int]) -> None:
+        host, port = str(addr[0]), int(addr[1])
+        if port <= 0:
+            return
+        with self._udp_remote_lock:
+            self._udp_remote = (host, port)
 
     def _accept_gyro_sample(self, x: float, y: float, z: float) -> bool:
         if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
@@ -119,50 +172,84 @@ class MavlinkBridge:
             self._rx_thread.join(timeout=1.0)
         except Exception:
             pass
-        try:
-            self._ser.close()
-        except Exception:
-            pass
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+        if self._udp_sock is not None:
+            try:
+                self._udp_sock.close()
+            except Exception:
+                pass
 
     def _rx_loop(self) -> None:
         while not self._stop:
-            try:
-                data = self._ser.read(512)
-            except Exception:
-                time.sleep(0.01)
-                continue
+            data = b""
+            rx_addr: tuple[str, int] | None = None
+            if self._transport == "serial":
+                try:
+                    if self._ser is not None:
+                        data = self._ser.read(512)
+                except Exception:
+                    time.sleep(0.01)
+                    continue
+            else:
+                try:
+                    if self._udp_sock is not None:
+                        data, addr = self._udp_sock.recvfrom(4096)
+                        rx_addr = (str(addr[0]), int(addr[1]))
+                except socket.timeout:
+                    continue
+                except Exception:
+                    time.sleep(0.01)
+                    continue
             if not data:
                 continue
+            if self._transport == "udp" and self._udp_learn_remote and rx_addr is not None:
+                self._set_udp_remote(rx_addr)
 
             for f in self._parser.feed(data):
                 try:
                     if f.msgid == 105 and len(f.payload) >= 62:
                         imu = HighresImu.decode(f.payload)
-                        with self._gyro_lock:
-                            gx = float(imu.xgyro)
-                            gy = float(imu.ygyro)
-                            gz = float(imu.zgyro)
-                            if self._accept_gyro_sample(gx, gy, gz):
-                                self._gyro.x_rad_s = gx
-                                self._gyro.y_rad_s = gy
-                                self._gyro.z_rad_s = gz
-                                if self._accept_temp(float(imu.temperature)):
-                                    self._gyro.temperature_c = float(imu.temperature)
-                                self._gyro.t_wall = f.timestamp
+                        if self._uses_imu_source("highres"):
+                            with self._gyro_lock:
+                                gx = float(imu.xgyro)
+                                gy = float(imu.ygyro)
+                                gz = float(imu.zgyro)
+                                if self._accept_gyro_sample(gx, gy, gz):
+                                    self._gyro.x_rad_s = gx
+                                    self._gyro.y_rad_s = gy
+                                    self._gyro.z_rad_s = gz
+                                    if self._accept_temp(float(imu.temperature)):
+                                        self._gyro.temperature_c = float(imu.temperature)
+                                    self._gyro.t_wall = f.timestamp
                     elif f.msgid == 26 and len(f.payload) >= 22:
                         imu = ScaledImu.decode(f.payload)
-                        with self._gyro_lock:
-                            gx = float(imu.xgyro_mrad_s) / 1000.0
-                            gy = float(imu.ygyro_mrad_s) / 1000.0
-                            gz = float(imu.zgyro_mrad_s) / 1000.0
-                            if self._accept_gyro_sample(gx, gy, gz):
-                                self._gyro.x_rad_s = gx
-                                self._gyro.y_rad_s = gy
-                                self._gyro.z_rad_s = gz
-                                self._gyro.t_wall = f.timestamp
-                    elif f.msgid == 30 and len(f.payload) >= 16:
+                        if self._uses_imu_source("scaled"):
+                            with self._gyro_lock:
+                                gx = float(imu.xgyro_mrad_s) / 1000.0
+                                gy = float(imu.ygyro_mrad_s) / 1000.0
+                                gz = float(imu.zgyro_mrad_s) / 1000.0
+                                if self._accept_gyro_sample(gx, gy, gz):
+                                    self._gyro.x_rad_s = gx
+                                    self._gyro.y_rad_s = gy
+                                    self._gyro.z_rad_s = gz
+                                    self._gyro.t_wall = f.timestamp
+                    elif f.msgid == 30 and len(f.payload) >= 28:
                         att = Attitude.decode(f.payload)
                         self._append_yaw_sample(float(att.time_boot_ms) * 1e-3, float(att.yaw), f.timestamp)
+                        if self._uses_imu_source("attitude"):
+                            with self._gyro_lock:
+                                gx = float(att.rollspeed)
+                                gy = float(att.pitchspeed)
+                                gz = float(att.yawspeed)
+                                if self._accept_gyro_sample(gx, gy, gz):
+                                    self._gyro.x_rad_s = gx
+                                    self._gyro.y_rad_s = gy
+                                    self._gyro.z_rad_s = gz
+                                    self._gyro.t_wall = f.timestamp
                     elif f.msgid == 31 and len(f.payload) >= 20:
                         attq = AttitudeQuaternion.decode(f.payload)
                         self._append_yaw_sample(float(attq.time_boot_ms) * 1e-3, float(attq.yaw_rad()), f.timestamp)
@@ -172,13 +259,30 @@ class MavlinkBridge:
     def _send(self, msgid: int, payload: bytes, crc_extra: int) -> None:
         pkt = mavlink1_pack(msgid, payload, sysid=self._sysid, compid=self._compid, seq=self._seq, crc_extra=crc_extra)
         self._seq = (self._seq + 1) & 0xFF
-        self._ser.write(pkt)
+        if self._transport == "serial":
+            if self._ser is not None:
+                self._ser.write(pkt)
+            return
+        if self._udp_sock is None:
+            return
+        with self._udp_remote_lock:
+            remote = self._udp_remote
+        if remote is None:
+            return
+        self._udp_sock.sendto(pkt, remote)
 
     def request_imu_stream(self) -> None:
         stream_id = int(self._imu_req_cfg.get("stream_id", 0))
         rate_hz = int(self._imu_req_cfg.get("rate_hz", 200))
         method = str(self._imu_req_cfg.get("method", "auto")).strip().lower()
-        msg_ids = self._imu_req_cfg.get("message_ids", [105, 26])
+        msg_ids = self._imu_req_cfg.get("message_ids", None)
+        if msg_ids is None:
+            if self._imu_source == "attitude":
+                msg_ids = [30, 31]
+            elif self._imu_source == "scaled":
+                msg_ids = [26]
+            else:
+                msg_ids = [105, 26, 30, 31]
         if isinstance(msg_ids, (int, float, str)):
             msg_ids = [msg_ids]
 

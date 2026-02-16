@@ -119,6 +119,9 @@ def main() -> int:
             def send_optical_flow_rad(self, **_kwargs):
                 return None
 
+            def send_distance_sensor(self, **_kwargs):
+                return None
+
             def read_yaw_samples(self, max_samples: int = 0, max_age_s: float = 0.0):
                 _ = max_samples
                 _ = max_age_s

@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PATH="${1:-${ROOT_DIR}/config.json}"
+DEFAULT_CONFIG="${ROOT_DIR}/config_sitl.json"
+if [ ! -f "${DEFAULT_CONFIG}" ]; then
+  DEFAULT_CONFIG="${ROOT_DIR}/config.json"
+fi
+CONFIG_PATH="${1:-${DEFAULT_CONFIG}}"
 
 echo "[px4flow_rpi] using config: ${CONFIG_PATH}"
 
@@ -12,6 +16,49 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO="sudo -n"
   fi
 fi
+
+detect_camera_backend() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    cam = data.get("camera", {}) if isinstance(data, dict) else {}
+    backend = cam.get("backend", "") if isinstance(cam, dict) else ""
+    print(str(backend).strip().lower())
+except Exception:
+    print("")
+PY
+}
+
+maybe_source_ros2() {
+  if [ "$1" != "ros2" ]; then
+    return
+  fi
+  local ros_setup="${ROS_SETUP_BASH:-}"
+  if [ -z "${ros_setup}" ]; then
+    for c in \
+      /opt/ros/jazzy/setup.bash \
+      /opt/ros/humble/setup.bash \
+      /opt/ros/iron/setup.bash \
+      /opt/ros/rolling/setup.bash; do
+      if [ -f "${c}" ]; then
+        ros_setup="${c}"
+        break
+      fi
+    done
+  fi
+  if [ -n "${ros_setup}" ] && [ -f "${ros_setup}" ]; then
+    # shellcheck disable=SC1090
+    source "${ros_setup}"
+    echo "[px4flow_rpi] sourced ROS2 setup: ${ros_setup}"
+  else
+    echo "[px4flow_rpi] ROS2 backend selected, assuming ROS env is already sourced"
+  fi
+}
 
 kill_camera_users() {
   echo "[px4flow_rpi] freeing camera resources..."
@@ -32,7 +79,12 @@ kill_camera_users() {
   sleep 0.5
 }
 
-kill_camera_users
+CAM_BACKEND="$(detect_camera_backend "${CONFIG_PATH}")"
+maybe_source_ros2 "${CAM_BACKEND}"
+
+if [ "${CAM_BACKEND}" = "picamera2" ] || [ "${CAM_BACKEND}" = "opencv" ]; then
+  kill_camera_users
+fi
 
 cd "${ROOT_DIR}"
 export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"

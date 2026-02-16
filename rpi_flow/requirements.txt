@@ -4,4 +4,5 @@ pyserial
 smbus2
 # Optional (recommended on Raspberry Pi OS with libcamera)
 picamera2
-
+# Optional for ROS2 topic backend (install from ROS distro packages):
+# rclpy, sensor_msgs

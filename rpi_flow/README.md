@@ -1,6 +1,6 @@
 # Raspberry Pi 5 Optical Flow (PX4Flow-compatible)
 
-Bu klasör PX4Flow Firmware reposuna, Raspberry Pi 5 üzerinde çalışan ve CUAV V5+ (PX4/ArduPilot) otopilota **MAVLink `OPTICAL_FLOW_RAD`** gönderen bir uygulama ekler.
+Bu klasör PX4Flow Firmware reposuna, Raspberry Pi 5 üzerinde çalışan veya SITL’de test edilebilen ve PX4/ArduPilot otopilota **MAVLink `OPTICAL_FLOW_RAD`** gönderen bir uygulama ekler.
 
 Hedef donanım:
 - Raspberry Pi 5
@@ -10,11 +10,12 @@ Hedef donanım:
 
 ## Çalıştırma
 
-1) (Raspberry Pi üzerinde) bağımlılıklar:
+1) Bağımlılıklar:
 - Python 3.10+
 - `python3-opencv`, `python3-numpy`, `python3-serial`
 - Kamera için önerilen: `python3-picamera2` (libcamera)
 - I2C için: `python3-smbus` veya `python3-smbus2`
+- ROS2 topic kamera backend için: `rclpy`, `sensor_msgs` (ROS distro paketleri)
 
 2) I2C ve seri port izinleri:
 - I2C: `sudo raspi-config` → Interfaces → I2C enable
@@ -25,6 +26,34 @@ Hedef donanım:
 - `serial.request_imu_stream.message_ids` içinde `30`/`31` (ATTITUDE/ATTITUDE_QUATERNION) bulunduğundan emin ol.
 - Hareket-benzerliğine dayalı zaman senkronizasyonu için `time_sync.enabled=true` kullan.
 - `time_sync.nominal_fps_source="runtime"` ile nominal FPS başlangıcı gerçek çalışma FPS’inden bootstrap edilir (`bootstrap_frames`, `bootstrap_timeout_s`).
+
+## SITL (ROS2 kamera + ATTITUDE IMU)
+
+SITL için hazır örnek dosya: `config_sitl.json`
+
+- Kamera: `camera.backend="ros2"` ve topic `/camera/image_raw`
+- IMU: `serial.imu_source="attitude"` (MAVLink `ATTITUDE` roll/pitch/yaw hızları)
+- MAVLink taşıma: `serial.transport="udp"`
+
+Çalıştırma:
+```bash
+cd rpi_flow
+./px4flow_rpi.sh
+```
+
+Varsayılan olarak script önce `config_sitl.json` dosyasını kullanır (yoksa `config.json`).
+
+Manuel:
+```bash
+cd rpi_flow
+PYTHONPATH=./src python3 -m px4flow_rpi.main --config ./config_sitl.json
+```
+
+Kısa yol:
+```bash
+cd rpi_flow
+python3 ./run.py
+```
 
 ## Kamera kalibrasyonu (Zhang)
 
@@ -65,19 +94,6 @@ Not: En pratik kullanım `px4flow_rpi.sh` çalıştırmaktır; bu şekilde termi
 ```bash
 cd rpi_flow
 ./px4flow_rpi.sh ./config.json
-```
-
-## PC üzerinde test
-
-Evet, bilgisayarda da test edip terminal çıktısını görebilirsin. Bunun için MAVLink seri çıkışını ve lidar’ı kapat:
-- `config.json` → `serial.enabled=false`
-- `config.json` → `lidar.enabled=false`
-- `config.json` → `camera.backend="opencv"` (PC webcam için)
-
-Sonra:
-```bash
-cd rpi_flow
-PYTHONPATH=./src python3 -m px4flow_rpi.main --config ./config.json
 ```
 
 ## Sistem servisi
