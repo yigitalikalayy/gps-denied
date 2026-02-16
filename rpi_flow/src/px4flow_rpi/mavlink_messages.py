@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 
@@ -43,6 +44,49 @@ class ScaledImu:
         return ScaledImu(time_boot_ms=time_boot_ms, xgyro_mrad_s=xgyro, ygyro_mrad_s=ygyro, zgyro_mrad_s=zgyro)
 
 
+@dataclass
+class Attitude:
+    time_boot_ms: int
+    roll: float
+    pitch: float
+    yaw: float
+
+    @staticmethod
+    def decode(payload: bytes) -> "Attitude":
+        # MAVLink ATTITUDE (id=30), first fields:
+        # time_boot_ms (u32), roll (f), pitch (f), yaw (f)
+        if len(payload) < 16:
+            raise ValueError("ATTITUDE payload too short")
+        time_boot_ms = struct.unpack_from("<I", payload, 0)[0]
+        roll, pitch, yaw = struct.unpack_from("<fff", payload, 4)
+        return Attitude(time_boot_ms=time_boot_ms, roll=roll, pitch=pitch, yaw=yaw)
+
+
+@dataclass
+class AttitudeQuaternion:
+    time_boot_ms: int
+    q1: float
+    q2: float
+    q3: float
+    q4: float
+
+    @staticmethod
+    def decode(payload: bytes) -> "AttitudeQuaternion":
+        # MAVLink ATTITUDE_QUATERNION (id=31), first fields:
+        # time_boot_ms (u32), q1,q2,q3,q4 (float*4)
+        if len(payload) < 20:
+            raise ValueError("ATTITUDE_QUATERNION payload too short")
+        time_boot_ms = struct.unpack_from("<I", payload, 0)[0]
+        q1, q2, q3, q4 = struct.unpack_from("<ffff", payload, 4)
+        return AttitudeQuaternion(time_boot_ms=time_boot_ms, q1=q1, q2=q2, q3=q3, q4=q4)
+
+    def yaw_rad(self) -> float:
+        # Autopilot quaternion convention is w,x,y,z => q1,q2,q3,q4.
+        siny_cosp = 2.0 * (self.q1 * self.q4 + self.q2 * self.q3)
+        cosy_cosp = 1.0 - 2.0 * (self.q3 * self.q3 + self.q4 * self.q4)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+
 def pack_request_data_stream(
     target_sysid: int,
     target_compid: int,
@@ -68,6 +112,44 @@ def pack_request_data_stream(
     return msgid, payload, crc_extra
 
 
+def pack_command_long(
+    *,
+    target_sysid: int,
+    target_compid: int,
+    command: int,
+    confirmation: int = 0,
+    param1: float = 0.0,
+    param2: float = 0.0,
+    param3: float = 0.0,
+    param4: float = 0.0,
+    param5: float = 0.0,
+    param6: float = 0.0,
+    param7: float = 0.0,
+) -> tuple[int, bytes, int]:
+    """
+    COMMAND_LONG (msgid=76, crc_extra=152)
+    Payload: param1..param7 (float*7), command (u16),
+             target_system (u8), target_component (u8), confirmation (u8)
+    """
+    msgid = 76
+    crc_extra = 152
+    payload = struct.pack(
+        "<fffffffHBBB",
+        float(param1),
+        float(param2),
+        float(param3),
+        float(param4),
+        float(param5),
+        float(param6),
+        float(param7),
+        int(command) & 0xFFFF,
+        int(target_sysid) & 0xFF,
+        int(target_compid) & 0xFF,
+        int(confirmation) & 0xFF,
+    )
+    return msgid, payload, crc_extra
+
+
 def pack_optical_flow_rad(
     time_usec: int,
     sensor_id: int,
@@ -88,22 +170,65 @@ def pack_optical_flow_rad(
     msgid = 106
     crc_extra = 138
 
-    quality_u8 = max(0, min(255, int(quality)))
-    temp_i16 = max(-32768, min(32767, int(round(temperature))))
+    def _finite(v: float, default: float = 0.0) -> float:
+        try:
+            if math.isfinite(v):
+                return float(v)
+        except Exception:
+            pass
+        return default
+
+    quality_u8 = max(0, min(255, int(_finite(float(quality), 0.0))))
+    temp_i16 = max(-32768, min(32767, int(round(_finite(float(temperature), 0.0)))))
 
     payload = struct.pack(
         "<QIfffffIfhBB",
         time_usec & 0xFFFFFFFFFFFFFFFF,
         integration_time_us & 0xFFFFFFFF,
-        float(integrated_x),
-        float(integrated_y),
-        float(integrated_xgyro),
-        float(integrated_ygyro),
-        float(integrated_zgyro),
+        _finite(integrated_x),
+        _finite(integrated_y),
+        _finite(integrated_xgyro),
+        _finite(integrated_ygyro),
+        _finite(integrated_zgyro),
         time_delta_distance_us & 0xFFFFFFFF,
-        float(distance_m),
+        _finite(distance_m),
         temp_i16,
         sensor_id & 0xFF,
         quality_u8,
+    )
+    return msgid, payload, crc_extra
+
+
+def pack_distance_sensor(
+    time_boot_ms: int,
+    min_distance_cm: int,
+    max_distance_cm: int,
+    current_distance_cm: int,
+    sensor_type: int,
+    sensor_id: int,
+    orientation: int,
+    covariance: int,
+) -> tuple[int, bytes, int]:
+    """
+    DISTANCE_SENSOR (msgid=132, crc_extra=85)
+    Payload: time_boot_ms (u32), min_distance (u16), max_distance (u16),
+             current_distance (u16), type (u8), id (u8), orientation (u8), covariance (u8)
+    """
+    msgid = 132
+    crc_extra = 85
+
+    def _u16(v: int) -> int:
+        return max(0, min(65535, int(v)))
+
+    payload = struct.pack(
+        "<IHHHBBBB",
+        int(time_boot_ms) & 0xFFFFFFFF,
+        _u16(min_distance_cm),
+        _u16(max_distance_cm),
+        _u16(current_distance_cm),
+        int(sensor_type) & 0xFF,
+        int(sensor_id) & 0xFF,
+        int(orientation) & 0xFF,
+        int(covariance) & 0xFF,
     )
     return msgid, payload, crc_extra

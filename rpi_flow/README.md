@@ -22,6 +22,23 @@ Hedef donanım:
 
 3) Konfigürasyon:
 - `config.json` içindeki `serial.port`, `camera.*`, `flow.*`, `lidar.*` alanlarını kendi sistemine göre ayarla.
+- `serial.request_imu_stream.message_ids` içinde `30`/`31` (ATTITUDE/ATTITUDE_QUATERNION) bulunduğundan emin ol.
+- Hareket-benzerliğine dayalı zaman senkronizasyonu için `time_sync.enabled=true` kullan.
+- `time_sync.nominal_fps_source="runtime"` ile nominal FPS başlangıcı gerçek çalışma FPS’inden bootstrap edilir (`bootstrap_frames`, `bootstrap_timeout_s`).
+
+## Kamera kalibrasyonu (Zhang)
+
+`OV9281` için pinhole intrinsics (`K`) ve distorsiyon (`k1,k2,p1,p2,k3`) hesabı `camera.calibration` ile yapılır.
+
+1) Satranç tahtası görüntülerini aynı çözünürlükte topla (örn. `rpi_flow/calib/*.png`).
+2) `config.json` içinde:
+- `camera.calibration.enabled=true`
+- `camera.calibration.mode="zhang"`
+- `camera.calibration.images_glob="calib/*.png"`
+- `camera.calibration.cache_file="calib/calibration_ov9281.json"`
+3) Uygulama ilk açılışta kalibrasyonu hesaplar, cache’e yazar ve tüm frame’leri undistort eder.
+
+Alternatif olarak `mode="precomputed"` ile `camera_matrix` ve `dist_coeffs` doğrudan verilebilir.
 
 4) Çalıştır:
 ```bash
@@ -42,6 +59,7 @@ Uygulama stdout’a şu metrikleri basar:
 - optik flow quality (0..255)
 - per-frame pixel displacement ve gyro (rad/s)
 - lidar distance (m)
+- `time_sync` sağlık durumu: `status=warming_up/healthy/degraded/stale`, `score`, `reason`, `lag_ms`, `corr`
 
 Not: En pratik kullanım `px4flow_rpi.sh` çalıştırmaktır; bu şekilde terminalde çıktıları sürekli izlersin:
 ```bash

@@ -10,7 +10,19 @@
     "request_imu_stream": {
       "enabled": true,
       "stream_id": 0,
-      "rate_hz": 200
+      "rate_hz": 200,
+      "method": "auto",
+      "message_ids": [105, 26, 30, 31]
+    },
+    "yaw_buffer": {
+      "max_samples": 6000
+    },
+    "imu_filter": {
+      "max_rad_s": 50.0,
+      "max_jump_rad_s": 20.0,
+      "max_age_s": 0.2,
+      "temp_min_c": -50.0,
+      "temp_max_c": 150.0
     }
   },
   "camera": {
@@ -18,30 +30,63 @@
     "device": 0,
     "width": 640,
     "height": 400,
-    "fps": 120,
+    "fps": 90,
     "grayscale": true,
     "roi": null,
-    "threaded": false,
+    "threaded": true,
     "queue_size": 2,
+    "calibration": {
+      "enabled": false,
+      "mode": "zhang",
+      "base_dir": ".",
+      "images_glob": "calib/*.png",
+      "cache_file": "calib/calibration_ov9281.json",
+      "prefer_cache": true,
+      "rectify_alpha": 0.0,
+      "chessboard_size": [9, 6],
+      "square_size": 0.024,
+      "min_images": 8,
+      "use_find_chessboard_sb": true
+    },
     "controls": {
-      "AeEnable": true
+      "AeEnable": false,
+      "ExposureTime": 5000,
+      "AnalogueGain": 1.0,
+      "FrameDurationLimits": [11111, 11111]
     }
   },
   "flow": {
     "publish_hz": 50,
     "quality_ema_alpha": 0.2,
+    "quality_mode": "requested",
     "focal_length_px": 4167.0,
     "axis_swap_xy": true,
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
-    "feature_max": 800,
+    "feature_max": 300,
+    "feature_detector": "shi_tomasi",
+    "min_geom_matches": 8,
+    "fundamental_ransac_thresh_px": 1.5,
+    "fundamental_confidence": 0.99,
+    "fundamental_max_iters": 2000,
+    "essential_ransac_thresh_px": 1.0,
+    "essential_confidence": 0.999,
     "feature_quality": 0.0005,
     "feature_min_distance": 3,
     "lk_win_size": 21,
     "lk_max_level": 3,
     "outlier_reject_mad": 5.0,
     "reseed_every_n_frames": 10,
-    "min_tracked_features": 1
+    "min_tracked_features": 1,
+    "fallback_mode": "phase",
+    "fallback_scale": 0.5,
+    "fallback_min_response": 0.0,
+    "preprocess": {
+      "clahe_clip": 2.0,
+      "clahe_tile": 8,
+      "gamma": 1.0,
+      "saturation_threshold": 245
+    }
   },
   "gyro": {
     "use_autopilot_imu": true,
@@ -54,21 +99,62 @@
     "backend": "lw20_ascii",
     "i2c_bus": 1,
     "i2c_address": 102,
-    "poll_hz": 50,
+    "scale": 1.0,
+    "debug": false,
+    "poll_hz": 100,
     "filter": {
-      "min_m": 0.2,
+      "min_m": 0.05,
       "max_m": 50.0,
-      "max_speed_m_s": 5.0,
-      "ema_alpha": 0.2
+      "max_speed_m_s": 50.0,
+      "max_dt_s": 0.05,
+      "max_jump_m": 0.5,
+      "reset_s": 0.2,
+      "reject_limit": 3,
+      "median_window": 3,
+      "ema_alpha": 0.0
     },
     "ascii": {
       "init_command": "?P",
       "distance_command": "?LDF,0",
-      "max_read_len": 32
+      "max_read_len": 32,
+      "value_index": 0
+    }
+  },
+  "time_sync": {
+    "enabled": true,
+    "nominal_fps_source": "runtime",
+    "bootstrap_frames": 60,
+    "bootstrap_timeout_s": 2.0,
+    "min_geom_inliers": 8,
+    "max_abs_yaw_delta_rad": 0.05,
+    "update_hz": 20.0,
+    "camera_window_samples": 240,
+    "imu_window_samples": 2400,
+    "imu_max_age_s": 10.0,
+    "min_samples": 24,
+    "min_angular_rate_rad_s": 0.03,
+    "min_signal_std": 0.00003,
+    "max_lag_s": 0.3,
+    "min_corr_peak": 0.05,
+    "measurement_sigma_s": 0.008,
+    "particle_count": 256,
+    "init_offset_std_s": 0.01,
+    "init_fps_std_hz": 1.0,
+    "process_noise_offset_s": 0.0005,
+    "process_noise_fps_hz": 0.02,
+    "fps_min_hz": 45.0,
+    "fps_max_hz": 130.0,
+    "health": {
+      "min_corr_peak": 0.1,
+      "max_abs_lag_s": 0.03,
+      "max_fps_error_rel": 0.03,
+      "min_good_updates": 5,
+      "max_stale_s": 2.5,
+      "ema_alpha": 0.2
     }
   },
   "logging": {
-    "print_hz": 10,
-    "print_raw_flow": true
+    "print_hz": 5,
+    "print_raw_flow": false
   }
 }

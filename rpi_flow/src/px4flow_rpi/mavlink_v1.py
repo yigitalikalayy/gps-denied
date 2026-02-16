@@ -43,30 +43,52 @@ class Mavlink1Parser:
         self._len = 0
         self._buf = bytearray()
         self._needed = 0
+        self._version = 1
 
     def feed(self, data: bytes) -> list[MavlinkFrame]:
         out: list[MavlinkFrame] = []
         for b in data:
             if self._state == 0:
                 if b == 0xFE:
+                    self._version = 1
+                    self._buf = bytearray([b])
+                    self._state = 1
+                elif b == 0xFD:
+                    self._version = 2
                     self._buf = bytearray([b])
                     self._state = 1
             elif self._state == 1:
                 self._len = b
                 self._buf.append(b)
-                self._needed = 5 + self._len + 2  # hdr (seq..msgid) + payload + checksum
                 self._state = 2
             elif self._state == 2:
                 self._buf.append(b)
-                if len(self._buf) == 1 + 1 + self._needed:
-                    frame = self._try_decode(bytes(self._buf))
-                    if frame is not None:
-                        out.append(frame)
-                    self._state = 0
+                if self._version == 1:
+                    total_len = 1 + 1 + 5 + self._len + 2  # stx+len+hdr+payload+crc
+                    if len(self._buf) == total_len:
+                        frame = self._try_decode_v1(bytes(self._buf))
+                        if frame is not None:
+                            out.append(frame)
+                        self._state = 0
+                    elif len(self._buf) > total_len:
+                        self._state = 0
+                else:
+                    # MAVLink2: need incompat_flags to know if signature is present.
+                    if len(self._buf) >= 3:
+                        incompat_flags = self._buf[2]
+                        sig_len = 13 if (incompat_flags & 0x01) else 0
+                        total_len = 10 + self._len + 2 + sig_len  # stx+len+hdr+payload+crc+sig
+                        if len(self._buf) == total_len:
+                            frame = self._try_decode_v2(bytes(self._buf))
+                            if frame is not None:
+                                out.append(frame)
+                            self._state = 0
+                        elif len(self._buf) > total_len:
+                            self._state = 0
         return out
 
     @staticmethod
-    def _try_decode(raw: bytes) -> MavlinkFrame | None:
+    def _try_decode_v1(raw: bytes) -> MavlinkFrame | None:
         if len(raw) < 8 or raw[0] != 0xFE:
             return None
         payload_len = raw[1]
@@ -81,6 +103,28 @@ class Mavlink1Parser:
             compid=compid,
             payload=payload,
             seq=seq,
-            timestamp=time.time(),
+            timestamp=time.monotonic(),
         )
 
+    @staticmethod
+    def _try_decode_v2(raw: bytes) -> MavlinkFrame | None:
+        if len(raw) < 12 or raw[0] != 0xFD:
+            return None
+        payload_len = raw[1]
+        incompat_flags = raw[2]
+        sig_len = 13 if (incompat_flags & 0x01) else 0
+        if len(raw) != 10 + payload_len + 2 + sig_len:
+            return None
+        seq = raw[4]
+        sysid = raw[5]
+        compid = raw[6]
+        msgid = raw[7] | (raw[8] << 8) | (raw[9] << 16)
+        payload = raw[10 : 10 + payload_len]
+        return MavlinkFrame(
+            msgid=msgid,
+            sysid=sysid,
+            compid=compid,
+            payload=payload,
+            seq=seq,
+            timestamp=time.monotonic(),
+        )
