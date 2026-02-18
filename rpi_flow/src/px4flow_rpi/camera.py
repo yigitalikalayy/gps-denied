@@ -177,6 +177,142 @@ class _Ros2ImageSource:
                 pass
 
 
+class _Ros1ImageSource:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self._cfg = cfg
+        self._topic = str(cfg.get("topic", "/camera/image_raw"))
+        self._node_name = str(cfg.get("ros_node_name", "px4flow_rpi_camera"))
+        self._timeout_s = max(0.05, float(cfg.get("ros_timeout_s", 1.0)))
+        self._queue: collections.deque[Frame] = collections.deque(maxlen=max(1, int(cfg.get("queue_size", 2))))
+        self._cv = threading.Condition()
+        self._stop = threading.Event()
+        self._sub = None
+
+        try:
+            import rospy  # type: ignore
+            from sensor_msgs.msg import Image  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "ros1 camera backend requires rospy and sensor_msgs (source ROS 1 environment first)"
+            ) from exc
+
+        self._rospy = rospy
+        self._owns_rospy = False
+        try:
+            if not rospy.core.is_initialized():  # type: ignore[attr-defined]
+                rospy.init_node(self._node_name, anonymous=True, disable_signals=True)
+                self._owns_rospy = True
+        except Exception:
+            try:
+                rospy.get_name()
+            except Exception:
+                rospy.init_node(self._node_name, anonymous=True, disable_signals=True)
+                self._owns_rospy = True
+
+        ros_queue = max(1, int(cfg.get("ros_queue_size", 5)))
+
+        def _on_image(msg: Image) -> None:
+            import numpy as np  # type: ignore
+
+            try:
+                gray = self._image_to_gray(msg)
+                fr = Frame(gray=np.ascontiguousarray(gray), t_monotonic=time.monotonic())
+            except Exception:
+                return
+            with self._cv:
+                self._queue.append(fr)
+                self._cv.notify_all()
+
+        self._sub = rospy.Subscriber(self._topic, Image, _on_image, queue_size=ros_queue)
+
+    @staticmethod
+    def _reshape_rows(buf: Any, height: int, step: int):
+        import numpy as np  # type: ignore
+
+        arr = np.frombuffer(buf, dtype=np.uint8)
+        expected = int(height) * int(step)
+        if arr.size < expected:
+            raise RuntimeError("ros1 image payload too small")
+        return arr[:expected].reshape(int(height), int(step))
+
+    @staticmethod
+    def _image_to_gray(msg: Any):
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+
+        h = int(msg.height)
+        w = int(msg.width)
+        step = int(msg.step)
+        if h <= 0 or w <= 0 or step <= 0:
+            raise RuntimeError("invalid ros1 image dimensions")
+        enc = str(msg.encoding).strip().lower()
+
+        if enc in ("mono8", "8uc1"):
+            rows = _Ros1ImageSource._reshape_rows(msg.data, h, step)
+            if step < w:
+                raise RuntimeError("invalid mono8 step")
+            return rows[:, :w]
+
+        if enc in ("bgr8", "rgb8"):
+            if step < (w * 3):
+                raise RuntimeError("invalid rgb/bgr step")
+            rows = _Ros1ImageSource._reshape_rows(msg.data, h, step)
+            img3 = rows[:, : (w * 3)].reshape(h, w, 3)
+            code = cv2.COLOR_BGR2GRAY if enc == "bgr8" else cv2.COLOR_RGB2GRAY
+            return cv2.cvtColor(img3, code)
+
+        if enc in ("bgra8", "rgba8"):
+            if step < (w * 4):
+                raise RuntimeError("invalid rgba/bgra step")
+            rows = _Ros1ImageSource._reshape_rows(msg.data, h, step)
+            img4 = rows[:, : (w * 4)].reshape(h, w, 4)
+            code = cv2.COLOR_BGRA2GRAY if enc == "bgra8" else cv2.COLOR_RGBA2GRAY
+            return cv2.cvtColor(img4, code)
+
+        if enc in ("mono16", "16uc1"):
+            if step < (w * 2):
+                raise RuntimeError("invalid mono16 step")
+            dtype = np.dtype(">u2" if int(msg.is_bigendian) else "<u2")
+            arr = np.frombuffer(msg.data, dtype=dtype)
+            cols = step // 2
+            if arr.size < (h * cols):
+                raise RuntimeError("ros1 mono16 payload too small")
+            img16 = arr[: h * cols].reshape(h, cols)[:, :w]
+            return (img16 >> 8).astype(np.uint8)
+
+        raise RuntimeError(f"unsupported ros1 image encoding: {enc}")
+
+    def read(self, timeout_s: float | None = None) -> Frame:
+        timeout = self._timeout_s if timeout_s is None else max(0.0, float(timeout_s))
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while (not self._queue) and (not self._stop.is_set()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._cv.wait(timeout=remaining)
+            if not self._queue:
+                raise RuntimeError(f"ros1 image topic timeout: {self._topic}")
+            fr = self._queue.pop()
+            self._queue.clear()
+            return fr
+
+    def close(self) -> None:
+        self._stop.set()
+        with self._cv:
+            self._cv.notify_all()
+        if self._sub is not None:
+            try:
+                self._sub.unregister()
+            except Exception:
+                pass
+        if self._owns_rospy:
+            try:
+                self._rospy.signal_shutdown("px4flow_rpi camera shutdown")
+            except Exception:
+                pass
+
+
 class Camera:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self._cfg = cfg
@@ -232,6 +368,11 @@ class Camera:
         if self._backend == "ros2":
             source = _Ros2ImageSource(self._cfg)
             self._impl = ("ros2", source)
+            return
+
+        if self._backend == "ros1":
+            source = _Ros1ImageSource(self._cfg)
+            self._impl = ("ros1", source)
             return
 
         raise ValueError(f"unknown camera backend: {self._backend}")
@@ -342,6 +483,15 @@ class Camera:
             gray = np.ascontiguousarray(gray)
             return Frame(gray=gray, t_monotonic=float(fr.t_monotonic))
 
+        if backend == "ros1":
+            import numpy as np  # type: ignore
+
+            fr = impl.read(timeout_s=float(self._cfg.get("ros_timeout_s", 1.0)))
+            gray = self._apply_undistort(fr.gray)
+            gray = self._crop_roi(gray, self._roi)
+            gray = np.ascontiguousarray(gray)
+            return Frame(gray=gray, t_monotonic=float(fr.t_monotonic))
+
         raise RuntimeError("camera not initialized")
 
     def close(self) -> None:
@@ -353,5 +503,7 @@ class Camera:
         elif backend == "picamera2":
             impl.stop()
         elif backend == "ros2":
+            impl.close()
+        elif backend == "ros1":
             impl.close()
         self._impl = None

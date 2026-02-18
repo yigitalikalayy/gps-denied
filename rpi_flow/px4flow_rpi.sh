@@ -60,6 +60,31 @@ maybe_source_ros2() {
   fi
 }
 
+maybe_source_ros1() {
+  if [ "$1" != "ros1" ]; then
+    return
+  fi
+  local ros_setup="${ROS1_SETUP_BASH:-}"
+  if [ -z "${ros_setup}" ]; then
+    for c in \
+      /opt/ros/noetic/setup.bash \
+      /opt/ros/melodic/setup.bash \
+      /opt/ros/kinetic/setup.bash; do
+      if [ -f "${c}" ]; then
+        ros_setup="${c}"
+        break
+      fi
+    done
+  fi
+  if [ -n "${ros_setup}" ] && [ -f "${ros_setup}" ]; then
+    # shellcheck disable=SC1090
+    source "${ros_setup}"
+    echo "[px4flow_rpi] sourced ROS1 setup: ${ros_setup}"
+  else
+    echo "[px4flow_rpi] ROS1 backend selected, assuming ROS env is already sourced"
+  fi
+}
+
 kill_camera_users() {
   echo "[px4flow_rpi] freeing camera resources..."
 
@@ -81,6 +106,7 @@ kill_camera_users() {
 
 CAM_BACKEND="$(detect_camera_backend "${CONFIG_PATH}")"
 maybe_source_ros2 "${CAM_BACKEND}"
+maybe_source_ros1 "${CAM_BACKEND}"
 
 if [ "${CAM_BACKEND}" = "picamera2" ] || [ "${CAM_BACKEND}" = "opencv" ]; then
   kill_camera_users

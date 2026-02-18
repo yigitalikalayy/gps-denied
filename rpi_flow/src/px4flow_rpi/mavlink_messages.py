@@ -191,7 +191,104 @@ def pack_optical_flow_rad(
         return default
 
     quality_u8 = max(0, min(255, int(_finite(float(quality), 0.0))))
-    temp_i16 = max(-32768, min(32767, int(round(_finite(float(temperature), 0.0)))))
+    # MAVLink OPTICAL_FLOW_RAD temperature is in cdegC (degC * 100).
+    temp_cdeg = _finite(float(temperature), 0.0) * 100.0
+    temp_i16 = max(-32768, min(32767, int(round(temp_cdeg))))
+
+    payload = struct.pack(
+        "<QIfffffIfhBB",
+        time_usec & 0xFFFFFFFFFFFFFFFF,
+        integration_time_us & 0xFFFFFFFF,
+        _finite(integrated_x),
+        _finite(integrated_y),
+        _finite(integrated_xgyro),
+        _finite(integrated_ygyro),
+        _finite(integrated_zgyro),
+        time_delta_distance_us & 0xFFFFFFFF,
+        _finite(distance_m),
+        temp_i16,
+        sensor_id & 0xFF,
+        quality_u8,
+    )
+    return msgid, payload, crc_extra
+
+
+def pack_optical_flow(
+    time_usec: int,
+    sensor_id: int,
+    flow_x: int,
+    flow_y: int,
+    flow_comp_m_x: float,
+    flow_comp_m_y: float,
+    quality: int,
+    ground_distance: float,
+) -> tuple[int, bytes, int]:
+    """
+    OPTICAL_FLOW (msgid=100, crc_extra=175)
+    Base (non-extension) fields only; MAVLink1 frame.
+    """
+    msgid = 100
+    crc_extra = 175
+
+    def _finite(v: float, default: float = 0.0) -> float:
+        try:
+            if math.isfinite(v):
+                return float(v)
+        except Exception:
+            pass
+        return default
+
+    def _i16(v: int) -> int:
+        return max(-32768, min(32767, int(v)))
+
+    quality_u8 = max(0, min(255, int(_finite(float(quality), 0.0))))
+
+    payload = struct.pack(
+        "<QfffhhBB",
+        time_usec & 0xFFFFFFFFFFFFFFFF,
+        _finite(flow_comp_m_x),
+        _finite(flow_comp_m_y),
+        _finite(ground_distance),
+        _i16(flow_x),
+        _i16(flow_y),
+        sensor_id & 0xFF,
+        quality_u8,
+    )
+    return msgid, payload, crc_extra
+
+
+def pack_hil_optical_flow(
+    time_usec: int,
+    sensor_id: int,
+    integration_time_us: int,
+    integrated_x: float,
+    integrated_y: float,
+    integrated_xgyro: float,
+    integrated_ygyro: float,
+    integrated_zgyro: float,
+    temperature: float,
+    quality: int,
+    time_delta_distance_us: int,
+    distance_m: float,
+) -> tuple[int, bytes, int]:
+    """
+    HIL_OPTICAL_FLOW (msgid=114, crc_extra=237)
+    """
+    msgid = 114
+    crc_extra = 237
+
+    def _finite(v: float, default: float = 0.0) -> float:
+        try:
+            if math.isfinite(v):
+                return float(v)
+        except Exception:
+            pass
+        return default
+
+    quality_u8 = max(0, min(255, int(_finite(float(quality), 0.0))))
+    # MAVLink HIL_OPTICAL_FLOW temperature is in cdegC (degC * 100).
+    temp_cdeg = _finite(float(temperature), 0.0) * 100.0
+    temp_i16 = max(-32768, min(32767, int(round(temp_cdeg))))
 
     payload = struct.pack(
         "<QIfffffIfhBB",

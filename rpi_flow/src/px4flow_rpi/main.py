@@ -9,7 +9,7 @@ import time
 
 from .camera import Camera
 from .config import AppConfig
-from .flow_estimator import OpticalFlowEstimator
+from .flow_estimator import OpticalFlowEstimator, Px4FlowEstimator
 from .stats import Rate
 
 
@@ -79,13 +79,31 @@ def main() -> int:
     log_cfg = cfg.section("logging")
     sync_cfg = cfg.section("time_sync")
 
+    flow_algo = str(flow_cfg.get("algorithm", "lk")).strip().lower()
     publish_hz = float(flow_cfg.get("publish_hz", 50))
     focal_length_px = float(flow_cfg.get("focal_length_px", 800.0))
+    if flow_algo in ("px4flow", "px4flow_cpp", "block", "block_match"):
+        try:
+            img_size = int(flow_cfg.get("px4flow_image_size", 64))
+            cam_w = int(cam_cfg.get("width", img_size))
+            if img_size > 0 and cam_w > 0:
+                focal_length_px = float(focal_length_px) * (float(img_size) / float(cam_w))
+        except Exception:
+            pass
     axis_swap_xy = bool(flow_cfg.get("axis_swap_xy", True))
     axis_sign_x = float(flow_cfg.get("axis_sign_x", 1.0))
     axis_sign_y = float(flow_cfg.get("axis_sign_y", -1.0))
     quality_ema_alpha = float(flow_cfg.get("quality_ema_alpha", 0.0))
     quality_ema_alpha = max(0.0, min(1.0, quality_ema_alpha))
+    send_optical_flow_rad = bool(flow_cfg.get("send_optical_flow_rad", True))
+    send_optical_flow = bool(flow_cfg.get("send_optical_flow", False))
+    send_hil_optical_flow = bool(flow_cfg.get("send_hil_optical_flow", False))
+    optical_flow_pixel_scale = float(flow_cfg.get("optical_flow_pixel_scale", 10.0))
+    if optical_flow_pixel_scale <= 0.0:
+        optical_flow_pixel_scale = 10.0
+    flow_distance_cap_m = float(flow_cfg.get("distance_cap_m", 0.0))
+    if flow_distance_cap_m < 0.0:
+        flow_distance_cap_m = 0.0
 
     gyro_sign_x = float(gyro_cfg.get("axis_sign_x", 1.0))
     gyro_sign_y = float(gyro_cfg.get("axis_sign_y", 1.0))
@@ -98,7 +116,12 @@ def main() -> int:
     sensor_id = int(serial_cfg.get("sysid", 42)) & 0xFF
 
     cam = Camera(cam_cfg)
-    flow = OpticalFlowEstimator(flow_cfg)
+    if flow_algo in ("px4flow", "px4flow_cpp", "block", "block_match"):
+        flow = Px4FlowEstimator(flow_cfg)
+        print("[px4flow_rpi] flow algorithm=px4flow")
+    else:
+        flow = OpticalFlowEstimator(flow_cfg)
+        print(f"[px4flow_rpi] flow algorithm={flow_algo}")
 
     serial_enabled = bool(serial_cfg.get("enabled", True))
     if serial_enabled:
@@ -153,6 +176,10 @@ def main() -> int:
             from .lidar import LightwareLw20BinaryI2C
 
             lidar = LightwareLw20BinaryI2C(lidar_cfg)
+        elif backend == "ros1":
+            from .lidar import Ros1RangeSubscriber
+
+            lidar = Ros1RangeSubscriber(lidar_cfg)
         else:
             raise ValueError(f"unsupported lidar backend: {backend}")
         lidar_poll_hz = float(lidar_cfg.get("poll_hz", 50))
@@ -466,6 +493,8 @@ def main() -> int:
             distance_m = 0.0
             time_delta_distance_us = 0
             distance_valid = False
+            flow_distance_m = 0.0
+            flow_distance_valid = False
             if lidar is not None:
                 with lidar_lock:
                     used = last_lidar_used
@@ -480,31 +509,83 @@ def main() -> int:
                     distance_m = float(used)
                     time_delta_distance_us = int(max(0.0, fr.t_monotonic - used_t) * 1_000_000)
                     distance_valid = True
+            if distance_valid:
+                flow_distance_m = float(distance_m)
+                if flow_distance_cap_m > 0.0:
+                    flow_distance_m = min(flow_distance_m, flow_distance_cap_m)
+                if flow_distance_m > 0.0:
+                    flow_distance_valid = True
 
             now = fr.t_monotonic
             if (now - last_pub_t) >= pub_period and integration_us > 0:
                 quality = int(round(quality_acc / max(1, quality_n)))
-                time_usec = _monotonic_to_time_usec(t0_mono, t0_time, now)
+                time_boot_ms_att = None
+                if serial_enabled:
+                    time_boot_ms_att = bridge.read_time_boot_ms()
+                time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
+                time_usec = int(time_boot_ms) * 1000
                 if sync is not None:
                     sync_usec = sync.estimate_frame_time_usec(frame_count)
                     if sync_usec is not None:
                         time_usec = int(sync_usec)
-                time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
+                if time_boot_ms_att is not None:
+                    time_boot_ms = int(time_boot_ms_att)
+                    time_usec = int(time_boot_ms_att) * 1000
 
-                bridge.send_optical_flow_rad(
-                    time_usec=time_usec,
-                    sensor_id=sensor_id,
-                    integration_time_us=int(integration_us),
-                    integrated_x=float(integrated_x),
-                    integrated_y=float(integrated_y),
-                    integrated_xgyro=float(integrated_xgyro),
-                    integrated_ygyro=float(integrated_ygyro),
-                    integrated_zgyro=float(integrated_zgyro),
-                    temperature=float(g.temperature_c),
-                    quality=int(quality),
-                    time_delta_distance_us=int(time_delta_distance_us),
-                    distance_m=float(distance_m),
-                )
+                if send_optical_flow_rad:
+                    of_distance_m = float(flow_distance_m) if flow_distance_valid else -1.0
+                    bridge.send_optical_flow_rad(
+                        time_usec=time_usec,
+                        sensor_id=sensor_id,
+                        integration_time_us=int(integration_us),
+                        integrated_x=float(integrated_x),
+                        integrated_y=float(integrated_y),
+                        integrated_xgyro=float(integrated_xgyro),
+                        integrated_ygyro=float(integrated_ygyro),
+                        integrated_zgyro=float(integrated_zgyro),
+                        temperature=float(g.temperature_c),
+                        quality=int(quality),
+                        time_delta_distance_us=int(time_delta_distance_us),
+                        distance_m=of_distance_m,
+                    )
+
+                if send_hil_optical_flow:
+                    of_distance_m = float(flow_distance_m) if flow_distance_valid else -1.0
+                    bridge.send_hil_optical_flow(
+                        time_usec=time_usec,
+                        sensor_id=sensor_id,
+                        integration_time_us=int(integration_us),
+                        integrated_x=float(integrated_x),
+                        integrated_y=float(integrated_y),
+                        integrated_xgyro=float(integrated_xgyro),
+                        integrated_ygyro=float(integrated_ygyro),
+                        integrated_zgyro=float(integrated_zgyro),
+                        temperature=float(g.temperature_c),
+                        quality=int(quality),
+                        time_delta_distance_us=int(time_delta_distance_us),
+                        distance_m=of_distance_m,
+                    )
+
+                if send_optical_flow:
+                    flow_comp_m_x = 0.0
+                    flow_comp_m_y = 0.0
+                    ground_distance = 0.0
+                    if flow_distance_valid:
+                        flow_comp_m_x = float(integrated_x) * float(flow_distance_m)
+                        flow_comp_m_y = float(integrated_y) * float(flow_distance_m)
+                        ground_distance = float(flow_distance_m)
+                    flow_x = int(round(float(pix_x) * optical_flow_pixel_scale))
+                    flow_y = int(round(float(pix_y) * optical_flow_pixel_scale))
+                    bridge.send_optical_flow(
+                        time_usec=time_usec,
+                        sensor_id=sensor_id,
+                        flow_x=flow_x,
+                        flow_y=flow_y,
+                        flow_comp_m_x=flow_comp_m_x,
+                        flow_comp_m_y=flow_comp_m_y,
+                        quality=int(quality),
+                        ground_distance=ground_distance,
+                    )
 
                 if distance_valid:
                     bridge.send_distance_sensor(

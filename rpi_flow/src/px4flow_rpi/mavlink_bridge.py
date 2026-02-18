@@ -20,6 +20,8 @@ from .mavlink_messages import (
     ScaledImu,
     pack_command_long,
     pack_distance_sensor,
+    pack_hil_optical_flow,
+    pack_optical_flow,
     pack_optical_flow_rad,
     pack_request_data_stream,
 )
@@ -40,6 +42,12 @@ class ImuYawSample:
     t_imu_s: float
     yaw_rad: float
     t_wall: float
+
+
+@dataclass
+class AttitudeTimeState:
+    time_boot_ms: int = 0
+    t_wall: float = 0.0
 
 
 class MavlinkBridge:
@@ -87,6 +95,8 @@ class MavlinkBridge:
         self._yaw_max_samples = max(64, int(yaw_buf_cfg.get("max_samples", 6000)))
         self._yaw_samples: collections.deque[ImuYawSample] = collections.deque(maxlen=self._yaw_max_samples)
         self._yaw_lock = threading.Lock()
+        self._att_time = AttitudeTimeState()
+        self._att_lock = threading.Lock()
 
         self._imu_req_cfg = cfg.get("request_imu_stream", {}) if isinstance(cfg.get("request_imu_stream", {}), dict) else {}
         imu_source = str(cfg.get("imu_source", "auto")).strip().lower()
@@ -239,6 +249,9 @@ class MavlinkBridge:
                                     self._gyro.t_wall = f.timestamp
                     elif f.msgid == 30 and len(f.payload) >= 28:
                         att = Attitude.decode(f.payload)
+                        with self._att_lock:
+                            self._att_time.time_boot_ms = int(att.time_boot_ms)
+                            self._att_time.t_wall = f.timestamp
                         self._append_yaw_sample(float(att.time_boot_ms) * 1e-3, float(att.yaw), f.timestamp)
                         if self._uses_imu_source("attitude"):
                             with self._gyro_lock:
@@ -252,6 +265,9 @@ class MavlinkBridge:
                                     self._gyro.t_wall = f.timestamp
                     elif f.msgid == 31 and len(f.payload) >= 20:
                         attq = AttitudeQuaternion.decode(f.payload)
+                        with self._att_lock:
+                            self._att_time.time_boot_ms = int(attq.time_boot_ms)
+                            self._att_time.t_wall = f.timestamp
                         self._append_yaw_sample(float(attq.time_boot_ms) * 1e-3, float(attq.yaw_rad()), f.timestamp)
                 except Exception:
                     continue
@@ -345,6 +361,17 @@ class MavlinkBridge:
             out = [s for s in out if s.t_imu_s >= cutoff]
         return out
 
+    def read_time_boot_ms(self, max_age_s: float | None = None) -> int | None:
+        if max_age_s is None:
+            max_age_s = self._gyro_max_age_s
+        with self._att_lock:
+            if self._att_time.time_boot_ms <= 0:
+                return None
+            if max_age_s and max_age_s > 0.0:
+                if (time.monotonic() - self._att_time.t_wall) > max_age_s:
+                    return None
+            return int(self._att_time.time_boot_ms)
+
     def send_optical_flow_rad(
         self,
         *,
@@ -362,6 +389,62 @@ class MavlinkBridge:
         distance_m: float,
     ) -> None:
         msgid, payload, crc_extra = pack_optical_flow_rad(
+            time_usec=time_usec,
+            sensor_id=sensor_id,
+            integration_time_us=integration_time_us,
+            integrated_x=integrated_x,
+            integrated_y=integrated_y,
+            integrated_xgyro=integrated_xgyro,
+            integrated_ygyro=integrated_ygyro,
+            integrated_zgyro=integrated_zgyro,
+            temperature=temperature,
+            quality=quality,
+            time_delta_distance_us=time_delta_distance_us,
+            distance_m=distance_m,
+        )
+        self._send(msgid, payload, crc_extra)
+
+    def send_optical_flow(
+        self,
+        *,
+        time_usec: int,
+        sensor_id: int,
+        flow_x: int,
+        flow_y: int,
+        flow_comp_m_x: float,
+        flow_comp_m_y: float,
+        quality: int,
+        ground_distance: float,
+    ) -> None:
+        msgid, payload, crc_extra = pack_optical_flow(
+            time_usec=time_usec,
+            sensor_id=sensor_id,
+            flow_x=flow_x,
+            flow_y=flow_y,
+            flow_comp_m_x=flow_comp_m_x,
+            flow_comp_m_y=flow_comp_m_y,
+            quality=quality,
+            ground_distance=ground_distance,
+        )
+        self._send(msgid, payload, crc_extra)
+
+    def send_hil_optical_flow(
+        self,
+        *,
+        time_usec: int,
+        sensor_id: int,
+        integration_time_us: int,
+        integrated_x: float,
+        integrated_y: float,
+        integrated_xgyro: float,
+        integrated_ygyro: float,
+        integrated_zgyro: float,
+        temperature: float,
+        quality: int,
+        time_delta_distance_us: int,
+        distance_m: float,
+    ) -> None:
+        msgid, payload, crc_extra = pack_hil_optical_flow(
             time_usec=time_usec,
             sensor_id=sensor_id,
             integration_time_us=integration_time_us,

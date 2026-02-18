@@ -3,15 +3,15 @@
     "enabled": true,
     "transport": "udp",
     "sysid": 42,
-    "compid": 197,
+    "compid": 195,
     "target_sysid": 1,
     "target_compid": 1,
     "imu_source": "attitude",
     "udp": {
       "bind_host": "0.0.0.0",
-      "bind_port": 14555,
+      "bind_port": 14030,
       "remote_host": "127.0.0.1",
-      "remote_port": 14550,
+      "remote_port": 14280,
       "learn_remote_from_rx": true
     },
     "request_imu_stream": {
@@ -33,7 +33,7 @@
     }
   },
   "camera": {
-    "backend": "ros2",
+    "backend": "ros1",
     "topic": "/camera/image_raw",
     "ros_node_name": "px4flow_rpi_sitl_camera",
     "ros_qos_reliability": "best_effort",
@@ -41,30 +41,45 @@
     "ros_timeout_s": 1.0,
     "ros_spin_timeout_s": 0.02,
     "width": 640,
-    "height": 480,
-    "fps": 30,
+    "height": 400,
+    "fps": 120,
     "roi": null,
     "threaded": true,
     "queue_size": 2,
     "calibration": {
-      "enabled": false,
-      "mode": "zhang",
+      "enabled": true,
+      "mode": "precomputed",
       "base_dir": ".",
-      "images_glob": "calib/*.png",
-      "cache_file": "calib/calibration_ov9281.json",
-      "prefer_cache": true,
+      "cache_file": "",
+      "prefer_cache": false,
       "rectify_alpha": 0.0,
-      "chessboard_size": [9, 6],
-      "square_size": 0.024,
-      "min_images": 8,
-      "use_find_chessboard_sb": true
+      "camera_matrix": [
+        [3358.281617164202, 0.0, 320.5],
+        [0.0, 3358.281617164202, 200.5],
+        [0.0, 0.0, 1.0]
+      ],
+      "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+      "rms": 0.0
     }
   },
   "flow": {
+    "algorithm": "px4flow",
     "publish_hz": 50,
     "quality_ema_alpha": 0.2,
     "quality_mode": "requested",
-    "focal_length_px": 800.0,
+    "send_optical_flow_rad": true,
+    "send_optical_flow": true,
+    "send_hil_optical_flow": false,
+    "optical_flow_pixel_scale": 10.0,
+    "distance_cap_m": 0.0,
+    "px4flow_image_size": 64,
+    "px4flow_search_size": 4,
+    "px4flow_feature_threshold": 40,
+    "px4flow_value_threshold": 2000,
+    "px4flow_tile_size": 8,
+    "px4flow_num_blocks": 5,
+    "px4flow_min_count": 10,
+    "focal_length_px": 3358.281617164202,
     "axis_swap_xy": true,
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
@@ -100,7 +115,11 @@
     "axis_sign_z": 1.0
   },
   "lidar": {
-    "enabled": false
+    "enabled": true,
+    "backend": "ros1",
+    "topic": "/distance_sensor",
+    "ros_timeout_s": 1.0,
+    "poll_hz": 50
   },
   "time_sync": {
     "enabled": true,

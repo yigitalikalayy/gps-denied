@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import collections
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -132,3 +134,84 @@ class LightwareLw20BinaryI2C:
             self._bus_handle.close()
         except Exception:
             pass
+
+
+class Ros1RangeSubscriber:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self._cfg = cfg
+        self._topic = str(cfg.get("topic", "/distance_sensor"))
+        self._node_name = str(cfg.get("ros_node_name", "px4flow_rpi_lidar"))
+        self._timeout_s = max(0.05, float(cfg.get("ros_timeout_s", 1.0)))
+        self._queue: collections.deque[LidarSample] = collections.deque(
+            maxlen=max(1, int(cfg.get("queue_size", 5)))
+        )
+        self._cv = threading.Condition()
+        self._stop = threading.Event()
+        self._sub = None
+
+        try:
+            import rospy  # type: ignore
+            from sensor_msgs.msg import Range  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "ros1 lidar backend requires rospy and sensor_msgs (source ROS 1 environment first)"
+            ) from exc
+
+        self._rospy = rospy
+        self._owns_rospy = False
+        try:
+            if not rospy.core.is_initialized():  # type: ignore[attr-defined]
+                rospy.init_node(self._node_name, anonymous=True, disable_signals=True)
+                self._owns_rospy = True
+        except Exception:
+            try:
+                rospy.get_name()
+            except Exception:
+                rospy.init_node(self._node_name, anonymous=True, disable_signals=True)
+                self._owns_rospy = True
+
+        ros_queue = max(1, int(cfg.get("ros_queue_size", 10)))
+
+        def _on_range(msg: Range) -> None:
+            try:
+                d = float(msg.range)
+            except Exception:
+                return
+            if not (d > 0.0):
+                return
+            sample = LidarSample(distance_m=d, t_monotonic=time.monotonic())
+            with self._cv:
+                self._queue.append(sample)
+                self._cv.notify_all()
+
+        self._sub = rospy.Subscriber(self._topic, Range, _on_range, queue_size=ros_queue)
+
+    def read(self, timeout_s: float | None = None) -> LidarSample:
+        timeout = self._timeout_s if timeout_s is None else max(0.0, float(timeout_s))
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while (not self._queue) and (not self._stop.is_set()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._cv.wait(timeout=remaining)
+            if not self._queue:
+                raise RuntimeError(f"ros1 range topic timeout: {self._topic}")
+            sample = self._queue.pop()
+            self._queue.clear()
+            return sample
+
+    def close(self) -> None:
+        self._stop.set()
+        with self._cv:
+            self._cv.notify_all()
+        if self._sub is not None:
+            try:
+                self._sub.unregister()
+            except Exception:
+                pass
+        if self._owns_rospy:
+            try:
+                self._rospy.signal_shutdown("px4flow_rpi lidar shutdown")
+            except Exception:
+                pass

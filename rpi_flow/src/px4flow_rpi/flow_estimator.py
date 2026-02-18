@@ -219,10 +219,10 @@ class OpticalFlowEstimator:
         f_mat, f_mask = cv2.findFundamentalMat(
             p0,
             p1,
-            method=cv2.FM_RANSAC,
-            ransacReprojThreshold=max(0.2, self._f_ransac_thresh_px),
-            confidence=max(0.5, min(0.9999, self._f_confidence)),
-            maxIters=max(100, self._f_max_iters),
+            cv2.FM_RANSAC,
+            max(0.2, self._f_ransac_thresh_px),
+            max(0.5, min(0.9999, self._f_confidence)),
+            max(100, self._f_max_iters),
         )
         if f_mat is None or f_mask is None:
             return None, 0
@@ -343,4 +343,162 @@ class OpticalFlowEstimator:
             yaw_rad=yaw_rad,
             geom_inliers=geom_inliers,
             motion_mag=float(math.hypot(dx_m, dy_m)),
+        )
+
+
+class Px4FlowEstimator:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        self._image_size = int(cfg.get("px4flow_image_size", 64))
+        self._search_size = int(cfg.get("px4flow_search_size", 4))
+        self._feature_threshold = int(cfg.get("px4flow_feature_threshold", 40))
+        self._value_threshold = int(cfg.get("px4flow_value_threshold", 2000))
+        self._tile_size = int(cfg.get("px4flow_tile_size", 8))
+        self._num_blocks = int(cfg.get("px4flow_num_blocks", 5))
+        self._min_count = int(cfg.get("px4flow_min_count", 10))
+        if self._image_size < self._tile_size * 2:
+            self._image_size = self._tile_size * 2
+        if self._search_size < 1:
+            self._search_size = 1
+        if self._num_blocks < 1:
+            self._num_blocks = 1
+        if self._tile_size < 4:
+            self._tile_size = 4
+        self._half_tile = (self._tile_size - 1) * 0.5
+
+    def set_camera_intrinsics(self, _camera_matrix: Any | None) -> None:
+        return None
+
+    def _prepare(self, gray: Any) -> Any:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+
+        if gray is None:
+            return None
+        if gray.dtype != np.uint8:
+            gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+        else:
+            gray_u8 = gray
+        if gray_u8.shape[0] != self._image_size or gray_u8.shape[1] != self._image_size:
+            gray_u8 = cv2.resize(gray_u8, (self._image_size, self._image_size), interpolation=cv2.INTER_AREA)
+        return gray_u8
+
+    def _compute_diff(self, img: Any, off_x: int, off_y: int) -> int:
+        import numpy as np  # type: ignore
+
+        x0 = off_x + 2
+        y0 = off_y + 2
+        patch = img[y0 : y0 + 4, x0 : x0 + 4]
+        if patch.shape != (4, 4):
+            return 0
+        row_diff = np.abs(patch[0] - patch[1]).sum()
+        row_diff += np.abs(patch[1] - patch[2]).sum()
+        row_diff += np.abs(patch[2] - patch[3]).sum()
+        col_diff = np.abs(patch[:, 0] - patch[:, 1]).sum()
+        col_diff += np.abs(patch[:, 1] - patch[:, 2]).sum()
+        col_diff += np.abs(patch[:, 2] - patch[:, 3]).sum()
+        return int(row_diff + col_diff)
+
+    def _sad_8x8(self, img1: Any, img2: Any, x1: int, y1: int, x2: int, y2: int) -> int:
+        import numpy as np  # type: ignore
+
+        p1 = img1[y1 : y1 + self._tile_size, x1 : x1 + self._tile_size]
+        p2 = img2[y2 : y2 + self._tile_size, x2 : x2 + self._tile_size]
+        if p1.shape != (self._tile_size, self._tile_size) or p2.shape != (self._tile_size, self._tile_size):
+            return 1_000_000_000
+        return int(np.abs(p1.astype(np.int16) - p2.astype(np.int16)).sum())
+
+    def _subpixel_dir(self, img1: Any, img2: Any, x: int, y: int, dx: int, dy: int) -> tuple[float, float]:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+
+        patch1 = img1[y : y + self._tile_size, x : x + self._tile_size]
+        if patch1.shape != (self._tile_size, self._tile_size):
+            return 0.0, 0.0
+        patch1 = patch1.astype(np.float32)
+        cx = float(x + dx) + self._half_tile
+        cy = float(y + dy) + self._half_tile
+        dirs = [
+            (0.5, 0.0),
+            (0.5, 0.5),
+            (0.0, 0.5),
+            (-0.5, 0.5),
+            (-0.5, 0.0),
+            (-0.5, -0.5),
+            (0.0, -0.5),
+            (0.5, -0.5),
+        ]
+        best = None
+        best_dir = (0.0, 0.0)
+        for off_x, off_y in dirs:
+            center = (cx + off_x, cy + off_y)
+            patch2 = cv2.getRectSubPix(img2, (self._tile_size, self._tile_size), center)
+            if patch2 is None or patch2.shape != (self._tile_size, self._tile_size):
+                continue
+            sad = float(np.abs(patch1 - patch2).sum())
+            if best is None or sad < best:
+                best = sad
+                best_dir = (off_x, off_y)
+        return best_dir
+
+    def estimate(self, prev_gray: Any, gray: Any) -> FlowResult:
+        import math
+
+        prev = self._prepare(prev_gray)
+        cur = self._prepare(gray)
+        if prev is None or cur is None:
+            return FlowResult(dx_px=0.0, dy_px=0.0, quality_u8=0, tracked=0, requested=0)
+
+        img_w = self._image_size
+        winmin = -self._search_size
+        winmax = self._search_size
+        pix_lo = self._search_size + 1
+        pix_hi = img_w - (self._search_size + 1) - self._tile_size
+        pix_step = (pix_hi - pix_lo) // self._num_blocks + 1 if pix_hi > pix_lo else 1
+
+        meancount = 0
+        sum_x = 0.0
+        sum_y = 0.0
+
+        for y in range(pix_lo, pix_hi + 1, pix_step):
+            for x in range(pix_lo, pix_hi + 1, pix_step):
+                diff = self._compute_diff(prev, x, y)
+                if diff < self._feature_threshold:
+                    continue
+
+                best = None
+                best_dx = 0
+                best_dy = 0
+                for dy in range(winmin, winmax + 1):
+                    for dx in range(winmin, winmax + 1):
+                        sad = self._sad_8x8(prev, cur, x, y, x + dx, y + dy)
+                        if best is None or sad < best:
+                            best = sad
+                            best_dx = dx
+                            best_dy = dy
+
+                if best is None or best >= self._value_threshold:
+                    continue
+
+                sub_dx, sub_dy = self._subpixel_dir(prev, cur, x, y, best_dx, best_dy)
+                sum_x += float(best_dx) + float(sub_dx)
+                sum_y += float(best_dy) + float(sub_dy)
+                meancount += 1
+
+        requested = self._num_blocks * self._num_blocks
+        if meancount > self._min_count:
+            dx = sum_x / float(meancount)
+            dy = sum_y / float(meancount)
+            quality = int(max(0, min(255, (meancount * 255) // max(1, requested))))
+        else:
+            dx = 0.0
+            dy = 0.0
+            quality = 0
+
+        return FlowResult(
+            dx_px=float(dx),
+            dy_px=float(dy),
+            quality_u8=int(quality),
+            tracked=int(meancount),
+            requested=int(requested),
+            motion_mag=float(math.hypot(float(dx), float(dy))),
         )
