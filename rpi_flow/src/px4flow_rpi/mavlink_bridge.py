@@ -372,6 +372,17 @@ class MavlinkBridge:
                     return None
             return int(self._att_time.time_boot_ms)
 
+    def read_time_boot_ms_with_wall(self, max_age_s: float | None = None) -> tuple[int, float] | None:
+        if max_age_s is None:
+            max_age_s = self._gyro_max_age_s
+        with self._att_lock:
+            if self._att_time.time_boot_ms <= 0:
+                return None
+            if max_age_s and max_age_s > 0.0:
+                if (time.monotonic() - self._att_time.t_wall) > max_age_s:
+                    return None
+            return int(self._att_time.time_boot_ms), float(self._att_time.t_wall)
+
     def send_optical_flow_rad(
         self,
         *,

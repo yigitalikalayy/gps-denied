@@ -90,9 +90,15 @@ def main() -> int:
                 focal_length_px = float(focal_length_px) * (float(img_size) / float(cam_w))
         except Exception:
             pass
+    axis_mode = str(flow_cfg.get("axis_mode", "")).strip().lower()
     axis_swap_xy = bool(flow_cfg.get("axis_swap_xy", True))
     axis_sign_x = float(flow_cfg.get("axis_sign_x", 1.0))
     axis_sign_y = float(flow_cfg.get("axis_sign_y", -1.0))
+    if axis_mode in ("gazebo_plugin", "px4flow_plugin", "plugin"):
+        axis_swap_xy = False
+        axis_sign_x = 1.0
+        axis_sign_y = 1.0
+        print("[px4flow_rpi] axis_mode=gazebo_plugin (swap_xy=false sign_x=+1 sign_y=+1)")
     quality_ema_alpha = float(flow_cfg.get("quality_ema_alpha", 0.0))
     quality_ema_alpha = max(0.0, min(1.0, quality_ema_alpha))
     send_optical_flow_rad = bool(flow_cfg.get("send_optical_flow_rad", True))
@@ -105,6 +111,7 @@ def main() -> int:
     if flow_distance_cap_m < 0.0:
         flow_distance_cap_m = 0.0
 
+    gyro_swap_xy = bool(gyro_cfg.get("axis_swap_xy", axis_swap_xy))
     gyro_sign_x = float(gyro_cfg.get("axis_sign_x", 1.0))
     gyro_sign_y = float(gyro_cfg.get("axis_sign_y", 1.0))
     gyro_sign_z = float(gyro_cfg.get("axis_sign_z", 1.0))
@@ -229,6 +236,11 @@ def main() -> int:
     fq = _FrameQueue(cam, maxlen=queue_size) if threaded else None
 
     prev = fq.get_latest() if fq is not None else cam.read()
+    prev_time_s = (
+        float(prev.t_stamp_s)
+        if prev.t_stamp_s is not None and float(prev.t_stamp_s) > 0.0
+        else float(prev.t_monotonic)
+    )
     frame_count = 0
 
     sync_nominal_source = str(sync_cfg.get("nominal_fps_source", "runtime")).strip().lower()
@@ -269,6 +281,15 @@ def main() -> int:
     quality_acc = 0
     quality_n = 0
     quality_ema = None
+    # Flow bias estimator to reduce slow drift when GPS is off.
+    flow_bias_x = 0.0
+    flow_bias_y = 0.0
+    flow_bias_alpha = 0.01
+    flow_bias_flow_thresh_px = 1.0
+    flow_bias_gyro_thresh = 0.05
+    last_time_usec = None
+    last_time_source = "none"
+    last_time_delta_us = None
 
     last_lidar = None
     last_lidar_t = None
@@ -422,7 +443,12 @@ def main() -> int:
             frame_count += 1
 
             fps = frame_rate.tick(fr.t_monotonic)
-            dt_s = max(1e-6, fr.t_monotonic - prev.t_monotonic)
+            frame_time_s = (
+                float(fr.t_stamp_s)
+                if fr.t_stamp_s is not None and float(fr.t_stamp_s) > 0.0
+                else float(fr.t_monotonic)
+            )
+            dt_s = max(1e-6, frame_time_s - prev_time_s)
             dt_us = int(dt_s * 1_000_000)
 
             if sync_cls is not None and sync is None:
@@ -452,8 +478,22 @@ def main() -> int:
                 pix_x = r.dx_px
                 pix_y = r.dy_px
 
-            integrated_x += axis_sign_x * (pix_x / focal_length_px)
-            integrated_y += axis_sign_y * (pix_y / focal_length_px)
+            g = bridge.read_gyro()
+            flow_x = axis_sign_x * (pix_x / focal_length_px)
+            flow_y = axis_sign_y * (pix_y / focal_length_px)
+            flow_mag_px = math.hypot(float(pix_x), float(pix_y))
+            if (
+                abs(g.x_rad_s) < flow_bias_gyro_thresh
+                and abs(g.y_rad_s) < flow_bias_gyro_thresh
+                and abs(g.z_rad_s) < flow_bias_gyro_thresh
+                and flow_mag_px < flow_bias_flow_thresh_px
+            ):
+                flow_bias_x = (1.0 - flow_bias_alpha) * flow_bias_x + flow_bias_alpha * flow_x
+                flow_bias_y = (1.0 - flow_bias_alpha) * flow_bias_y + flow_bias_alpha * flow_y
+            flow_x -= flow_bias_x
+            flow_y -= flow_bias_y
+            integrated_x += flow_x
+            integrated_y += flow_y
             integration_us += dt_us
             q_raw = int(r.quality_u8)
             if quality_ema_alpha > 0.0:
@@ -468,9 +508,14 @@ def main() -> int:
             quality_acc += int(q_use)
             quality_n += 1
 
-            g = bridge.read_gyro()
-            integrated_xgyro += gyro_sign_x * g.x_rad_s * dt_s
-            integrated_ygyro += gyro_sign_y * g.y_rad_s * dt_s
+            if gyro_swap_xy:
+                gyro_x = g.y_rad_s
+                gyro_y = g.x_rad_s
+            else:
+                gyro_x = g.x_rad_s
+                gyro_y = g.y_rad_s
+            integrated_xgyro += gyro_sign_x * gyro_x * dt_s
+            integrated_ygyro += gyro_sign_y * gyro_y * dt_s
             integrated_zgyro += gyro_sign_z * g.z_rad_s * dt_s
             if sync is not None:
                 yaw_delta_for_sync = None
@@ -519,18 +564,49 @@ def main() -> int:
             now = fr.t_monotonic
             if (now - last_pub_t) >= pub_period and integration_us > 0:
                 quality = int(round(quality_acc / max(1, quality_n)))
-                time_boot_ms_att = None
+                att_time = None
+                time_source = "monotonic"
                 if serial_enabled:
-                    time_boot_ms_att = bridge.read_time_boot_ms()
+                    att_time = bridge.read_time_boot_ms_with_wall()
                 time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
                 time_usec = int(time_boot_ms) * 1000
-                if sync is not None:
-                    sync_usec = sync.estimate_frame_time_usec(frame_count)
-                    if sync_usec is not None:
-                        time_usec = int(sync_usec)
-                if time_boot_ms_att is not None:
-                    time_boot_ms = int(time_boot_ms_att)
-                    time_usec = int(time_boot_ms_att) * 1000
+                if fr.t_stamp_s is not None and float(fr.t_stamp_s) > 0.0:
+                    time_usec = int(float(fr.t_stamp_s) * 1_000_000.0)
+                    time_boot_ms = int(time_usec // 1000)
+                    time_source = "ros_stamp"
+                else:
+                    if sync is not None:
+                        sync_usec = sync.estimate_frame_time_usec(frame_count)
+                        if sync_usec is not None:
+                            time_usec = int(sync_usec)
+                            time_source = "sync"
+                    if att_time is not None:
+                        att_boot_ms, att_wall = att_time
+                        att_age_s = max(0.0, float(now - att_wall))
+                        time_boot_ms = int(float(att_boot_ms) + att_age_s * 1_000.0)
+                        time_usec = int(time_boot_ms) * 1000
+                        time_source = "attitude_interp"
+
+                if last_time_usec is not None:
+                    guard_us = max(1, int(integration_us))
+                    pub_us = max(1, int(pub_period * 1_000_000))
+                    min_next_usec = int(last_time_usec + max(guard_us, pub_us // 2))
+                    max_next_usec = int(last_time_usec + max(guard_us * 5, pub_us * 3, guard_us + 60000))
+                    if time_usec < min_next_usec:
+                        time_usec = min_next_usec
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = f"{time_source}_guard_lo"
+                    elif time_usec > max_next_usec:
+                        time_usec = max_next_usec
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = f"{time_source}_guard_hi"
+
+                if last_time_usec is not None:
+                    last_time_delta_us = int(time_usec - last_time_usec)
+                else:
+                    last_time_delta_us = None
+                last_time_usec = int(time_usec)
+                last_time_source = time_source
 
                 if send_optical_flow_rad:
                     of_distance_m = float(flow_distance_m) if flow_distance_valid else -1.0
@@ -615,11 +691,14 @@ def main() -> int:
                 if sync is not None:
                     s = sync.read_state()
                     sync_info = (
-                        f" sync(status={s.health_status} score={s.health_score:.2f} reason={s.health_reason}"
-                        f" off={s.t_offset_s:+.6f}s fps={s.fps_hz:7.3f}"
-                        f" lag_ms={1000.0 * s.lag_s:+6.2f} corr={s.corr_peak:.3f}"
-                        f" good={s.good_updates} bad={s.bad_updates})"
+                        f" sync(status={s.health_status} score={s.health_score:.2f} "
+                        f"reason={s.health_reason} off={s.t_offset_s:+.6f}s fps={s.fps_hz:7.3f})"
                     )
+                if last_time_usec is None:
+                    time_info = " t_src=none t_usec=0 dt_us=n/a"
+                else:
+                    dt_str = "n/a" if last_time_delta_us is None else f"{last_time_delta_us:7d}"
+                    time_info = f" t_src={last_time_source} t_usec={last_time_usec} dt_us={dt_str}"
                 if print_raw_flow:
                     if quality_ema_alpha > 0.0:
                         print(
@@ -631,7 +710,7 @@ def main() -> int:
                             f"int_g(rad)=({integrated_xgyro:+.5f},{integrated_ygyro:+.5f},{integrated_zgyro:+.5f}) "
                             f"g=({g.x_rad_s:+6.3f},{g.y_rad_s:+6.3f},{g.z_rad_s:+6.3f}) "
                             f"lidar={distance_m:5.2f}m dt_lidar_us={time_delta_distance_us:7d}"
-                            f"{sync_info}"
+                            f"{sync_info}{time_info}"
                         )
                     else:
                         print(
@@ -643,12 +722,16 @@ def main() -> int:
                             f"int_g(rad)=({integrated_xgyro:+.5f},{integrated_ygyro:+.5f},{integrated_zgyro:+.5f}) "
                             f"g=({g.x_rad_s:+6.3f},{g.y_rad_s:+6.3f},{g.z_rad_s:+6.3f}) "
                             f"lidar={distance_m:5.2f}m dt_lidar_us={time_delta_distance_us:7d}"
-                            f"{sync_info}"
+                            f"{sync_info}{time_info}"
                         )
                 else:
-                    print(f"frames={frame_count} fps={fps:6.1f} q={q_use:3d} lidar={distance_m:5.2f}m{sync_info}")
+                    print(
+                        f"frames={frame_count} fps={fps:6.1f} q={q_use:3d} "
+                        f"lidar={distance_m:5.2f}m{sync_info}{time_info}"
+                    )
 
             prev = fr
+            prev_time_s = frame_time_s
     except KeyboardInterrupt:
         return 0
     finally:

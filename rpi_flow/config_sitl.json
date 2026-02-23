@@ -65,7 +65,7 @@
   "flow": {
     "algorithm": "px4flow",
     "publish_hz": 50,
-    "quality_ema_alpha": 0.2,
+    "quality_ema_alpha": 0.0,
     "quality_mode": "requested",
     "send_optical_flow_rad": true,
     "send_optical_flow": true,
@@ -80,6 +80,7 @@
     "px4flow_num_blocks": 5,
     "px4flow_min_count": 10,
     "focal_length_px": 3358.281617164202,
+    "axis_mode": "",
     "axis_swap_xy": true,
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
@@ -110,6 +111,7 @@
   },
   "gyro": {
     "use_autopilot_imu": true,
+    "axis_swap_xy": false,
     "axis_sign_x": 1.0,
     "axis_sign_y": 1.0,
     "axis_sign_z": 1.0

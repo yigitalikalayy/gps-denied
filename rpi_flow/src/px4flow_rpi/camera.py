@@ -13,6 +13,7 @@ from .camera_calibration import CalibrationResult, load_camera_calibration
 class Frame:
     gray: Any  # numpy array
     t_monotonic: float
+    t_stamp_s: float | None = None
 
 
 class _Ros2ImageSource:
@@ -59,7 +60,20 @@ class _Ros2ImageSource:
 
             try:
                 gray = self._image_to_gray(msg)
-                fr = Frame(gray=np.ascontiguousarray(gray), t_monotonic=time.monotonic())
+                stamp_s = None
+                try:
+                    stamp = msg.header.stamp
+                    sec = getattr(stamp, "sec", None)
+                    nsec = getattr(stamp, "nanosec", None)
+                    if sec is None:
+                        sec = getattr(stamp, "secs", None)
+                    if nsec is None:
+                        nsec = getattr(stamp, "nsecs", None)
+                    if sec is not None and nsec is not None:
+                        stamp_s = float(sec) + float(nsec) * 1e-9
+                except Exception:
+                    stamp_s = None
+                fr = Frame(gray=np.ascontiguousarray(gray), t_monotonic=time.monotonic(), t_stamp_s=stamp_s)
             except Exception:
                 return
             with self._cv:
@@ -216,7 +230,19 @@ class _Ros1ImageSource:
 
             try:
                 gray = self._image_to_gray(msg)
-                fr = Frame(gray=np.ascontiguousarray(gray), t_monotonic=time.monotonic())
+                stamp_s = None
+                try:
+                    stamp = msg.header.stamp
+                    if hasattr(stamp, "to_sec"):
+                        stamp_s = float(stamp.to_sec())
+                    else:
+                        sec = getattr(stamp, "secs", None)
+                        nsec = getattr(stamp, "nsecs", None)
+                        if sec is not None and nsec is not None:
+                            stamp_s = float(sec) + float(nsec) * 1e-9
+                except Exception:
+                    stamp_s = None
+                fr = Frame(gray=np.ascontiguousarray(gray), t_monotonic=time.monotonic(), t_stamp_s=stamp_s)
             except Exception:
                 return
             with self._cv:
@@ -458,7 +484,7 @@ class Camera:
             gray = self._crop_roi(gray, self._roi)
             gray = np.ascontiguousarray(gray)
             t = time.monotonic()
-            return Frame(gray=gray, t_monotonic=t)
+            return Frame(gray=gray, t_monotonic=t, t_stamp_s=None)
 
         if backend == "opencv":
             import cv2  # type: ignore
@@ -472,7 +498,7 @@ class Camera:
             gray = self._crop_roi(gray, self._roi)
             gray = np.ascontiguousarray(gray)
             t = time.monotonic()
-            return Frame(gray=gray, t_monotonic=t)
+            return Frame(gray=gray, t_monotonic=t, t_stamp_s=None)
 
         if backend == "ros2":
             import numpy as np  # type: ignore
@@ -481,7 +507,7 @@ class Camera:
             gray = self._apply_undistort(fr.gray)
             gray = self._crop_roi(gray, self._roi)
             gray = np.ascontiguousarray(gray)
-            return Frame(gray=gray, t_monotonic=float(fr.t_monotonic))
+            return Frame(gray=gray, t_monotonic=float(fr.t_monotonic), t_stamp_s=fr.t_stamp_s)
 
         if backend == "ros1":
             import numpy as np  # type: ignore
@@ -490,7 +516,7 @@ class Camera:
             gray = self._apply_undistort(fr.gray)
             gray = self._crop_roi(gray, self._roi)
             gray = np.ascontiguousarray(gray)
-            return Frame(gray=gray, t_monotonic=float(fr.t_monotonic))
+            return Frame(gray=gray, t_monotonic=float(fr.t_monotonic), t_stamp_s=fr.t_stamp_s)
 
         raise RuntimeError("camera not initialized")
 

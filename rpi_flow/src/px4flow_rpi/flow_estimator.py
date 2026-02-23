@@ -355,6 +355,13 @@ class Px4FlowEstimator:
         self._tile_size = int(cfg.get("px4flow_tile_size", 8))
         self._num_blocks = int(cfg.get("px4flow_num_blocks", 5))
         self._min_count = int(cfg.get("px4flow_min_count", 10))
+        outlier_mad = cfg.get("px4flow_outlier_mad", None)
+        if outlier_mad is None:
+            outlier_mad = cfg.get("outlier_reject_mad", 4.0)
+        try:
+            self._outlier_mad = float(outlier_mad)
+        except Exception:
+            self._outlier_mad = 4.0
         if self._image_size < self._tile_size * 2:
             self._image_size = self._tile_size * 2
         if self._search_size < 1:
@@ -458,6 +465,8 @@ class Px4FlowEstimator:
         meancount = 0
         sum_x = 0.0
         sum_y = 0.0
+        samples_dx: list[float] = []
+        samples_dy: list[float] = []
 
         for y in range(pix_lo, pix_hi + 1, pix_step):
             for x in range(pix_lo, pix_hi + 1, pix_step):
@@ -480,12 +489,37 @@ class Px4FlowEstimator:
                     continue
 
                 sub_dx, sub_dy = self._subpixel_dir(prev, cur, x, y, best_dx, best_dy)
-                sum_x += float(best_dx) + float(sub_dx)
-                sum_y += float(best_dy) + float(sub_dy)
+                dx_f = float(best_dx) + float(sub_dx)
+                dy_f = float(best_dy) + float(sub_dy)
+                samples_dx.append(dx_f)
+                samples_dy.append(dy_f)
+                sum_x += dx_f
+                sum_y += dy_f
                 meancount += 1
 
         requested = self._num_blocks * self._num_blocks
         if meancount > self._min_count:
+            # Robust outlier rejection using median absolute deviation.
+            if self._outlier_mad > 0.0 and meancount >= max(6, self._min_count):
+                try:
+                    import numpy as np  # type: ignore
+
+                    dx_arr = np.asarray(samples_dx, dtype=np.float64)
+                    dy_arr = np.asarray(samples_dy, dtype=np.float64)
+                    med_x = float(np.median(dx_arr))
+                    med_y = float(np.median(dy_arr))
+                    dev = np.hypot(dx_arr - med_x, dy_arr - med_y)
+                    mad = float(np.median(dev))
+                    if mad > 1e-6:
+                        keep = dev <= (self._outlier_mad * mad)
+                        if int(np.count_nonzero(keep)) >= self._min_count:
+                            dx_arr = dx_arr[keep]
+                            dy_arr = dy_arr[keep]
+                            meancount = int(dx_arr.size)
+                            sum_x = float(dx_arr.sum())
+                            sum_y = float(dy_arr.sum())
+                except Exception:
+                    pass
             dx = sum_x / float(meancount)
             dy = sum_y / float(meancount)
             quality = int(max(0, min(255, (meancount * 255) // max(1, requested))))
