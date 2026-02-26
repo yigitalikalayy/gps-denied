@@ -25,15 +25,29 @@ class OpticalFlowEstimator:
         self._win_size = int(cfg.get("lk_win_size", 21))
         self._max_level = int(cfg.get("lk_max_level", 3))
         self._mad_k = float(cfg.get("outlier_reject_mad", 3.5))
+        self._fb_check = bool(cfg.get("lk_fb_check", True))
+        self._fb_thresh_px = float(cfg.get("lk_fb_thresh_px", 1.5))
+        self._ransac_enable = bool(cfg.get("lk_ransac", True))
+        self._ransac_thresh_px = float(cfg.get("lk_ransac_thresh_px", 2.0))
+        self._ransac_confidence = float(cfg.get("lk_ransac_confidence", 0.99))
+        self._ransac_max_iters = int(cfg.get("lk_ransac_max_iters", 2000))
         self._reseed_every = int(cfg.get("reseed_every_n_frames", 10))
         self._min_tracked = int(cfg.get("min_tracked_features", 10))
         self._quality_mode = str(cfg.get("quality_mode", "max_features")).strip().lower()
+        self._min_inlier_ratio = float(cfg.get("min_inlier_ratio", 0.0))
+        self._quality_mad_px = float(cfg.get("quality_mad_px", 0.0))
+        self._quality_motion_px = float(cfg.get("quality_motion_px", 0.0))
+        self._quality_motion_floor = float(cfg.get("quality_motion_floor", 0.0))
+        self._quality_min = int(cfg.get("quality_min", 0))
+        self._quality_max = int(cfg.get("quality_max", 255))
+        self._flow_deadband_px = float(cfg.get("flow_deadband_px", 0.0))
         self._fallback_mode = str(cfg.get("fallback_mode", "none")).strip().lower()
         self._fallback_scale = float(cfg.get("fallback_scale", 1.0))
         self._fallback_min_response = float(cfg.get("fallback_min_response", 0.0))
         self._feature_detector = str(cfg.get("feature_detector", "shi_tomasi")).strip().lower()
         self._fast_threshold = int(cfg.get("fast_threshold", 20))
         self._fast_nonmax = bool(cfg.get("fast_nonmax_suppression", True))
+        self._feature_border_px = int(cfg.get("feature_border_px", 8))
         self._min_geom_matches = max(5, int(cfg.get("min_geom_matches", 8)))
         self._f_ransac_thresh_px = float(cfg.get("fundamental_ransac_thresh_px", 1.5))
         self._f_confidence = float(cfg.get("fundamental_confidence", 0.99))
@@ -114,23 +128,22 @@ class OpticalFlowEstimator:
         return out
 
     @staticmethod
-    def _robust_mean(dx: Any, dy: Any, k: float) -> tuple[float, float, int]:
+    def _robust_mean(dx: Any, dy: Any, k: float) -> tuple[float, float, int, float]:
         import numpy as np  # type: ignore
 
         if dx.size == 0:
-            return 0.0, 0.0, 0
+            return 0.0, 0.0, 0, 0.0
 
         med_dx = float(np.median(dx))
         med_dy = float(np.median(dy))
-        mad_dx = float(np.median(np.abs(dx - med_dx))) + 1e-6
-        mad_dy = float(np.median(np.abs(dy - med_dy))) + 1e-6
-
-        keep = (np.abs(dx - med_dx) <= k * mad_dx) & (np.abs(dy - med_dy) <= k * mad_dy)
+        residual = np.hypot(dx - med_dx, dy - med_dy)
+        mad = float(np.median(np.abs(residual))) + 1e-6
+        keep = residual <= k * mad
         dx2 = dx[keep]
         dy2 = dy[keep]
         if dx2.size == 0:
-            return med_dx, med_dy, int(dx.size)
-        return float(np.mean(dx2)), float(np.mean(dy2)), int(dx2.size)
+            return med_dx, med_dy, int(dx.size), mad
+        return float(np.mean(dx2)), float(np.mean(dy2)), int(dx2.size), mad
 
     def _fallback_phase(self, prev_gray: Any, gray: Any, requested: int) -> FlowResult:
         if self._fallback_mode != "phase":
@@ -290,6 +303,16 @@ class OpticalFlowEstimator:
         mask = None
         if self._saturation_thresh > 0:
             mask = (prev_p < self._saturation_thresh).astype(np.uint8) * 255
+        if self._feature_border_px > 0:
+            h, w = prev_p.shape[:2]
+            b = int(self._feature_border_px)
+            if h > 2 * b and w > 2 * b:
+                border = np.zeros((h, w), dtype=np.uint8)
+                border[b : h - b, b : w - b] = 255
+                if mask is None:
+                    mask = border
+                else:
+                    mask = cv2.bitwise_and(mask, border)
         reseed = (self._p0 is None) or (self._frame_idx % self._reseed_every == 0)
         if reseed:
             self._p0 = self._detect(prev_p, mask)
@@ -317,23 +340,88 @@ class OpticalFlowEstimator:
             self._p0 = None
             return self._fallback_phase(prev_p, gray_p, requested)
 
+        if self._fb_check:
+            p0b, st_b, _err_b = cv2.calcOpticalFlowPyrLK(gray_p, prev_p, p1g.reshape(-1, 1, 2), None, **lk_params)
+            if p0b is not None and st_b is not None:
+                back_ok = st_b.reshape(-1) == 1
+                p0b = p0b.reshape(-1, 2)
+                fb_err = np.linalg.norm(p0b - p0g, axis=1)
+                fb_keep = back_ok & (fb_err <= max(0.1, self._fb_thresh_px))
+                p0g = p0g[fb_keep]
+                p1g = p1g[fb_keep]
+                tracked = int(p0g.shape[0])
+                if tracked < self._min_tracked:
+                    self._p0 = None
+                    return self._fallback_phase(prev_p, gray_p, requested)
+
         d = p1g - p0g
         dx = d[:, 0]
         dy = d[:, 1]
 
-        dx_m, dy_m, kept = self._robust_mean(dx, dy, self._mad_k)
+        inlier_mask = None
+        if self._ransac_enable and tracked >= max(6, self._min_tracked):
+            try:
+                model, inliers = cv2.estimateAffinePartial2D(
+                    p0g,
+                    p1g,
+                    method=cv2.RANSAC,
+                    ransacReprojThreshold=max(0.5, self._ransac_thresh_px),
+                    confidence=max(0.5, min(0.9999, self._ransac_confidence)),
+                    maxIters=max(200, self._ransac_max_iters),
+                )
+            except Exception:
+                model, inliers = None, None
+            if inliers is not None:
+                inlier_mask = inliers.reshape(-1).astype(bool)
+                if int(np.count_nonzero(inlier_mask)) < self._min_tracked:
+                    inlier_mask = None
+
+        if inlier_mask is not None:
+            dx_in = dx[inlier_mask]
+            dy_in = dy[inlier_mask]
+            dx_m, dy_m, _kept, mad = self._robust_mean(dx_in, dy_in, self._mad_k)
+            residual = np.hypot(dx_in - dx_m, dy_in - dy_m)
+            keep = residual <= (self._mad_k * max(1e-6, mad))
+            p0_use = p0g[inlier_mask][keep]
+            p1_use = p1g[inlier_mask][keep]
+        else:
+            dx_m, dy_m, _kept, mad = self._robust_mean(dx, dy, self._mad_k)
+            residual = np.hypot(dx - dx_m, dy - dy_m)
+            keep = residual <= (self._mad_k * max(1e-6, mad))
+            p0_use = p0g[keep]
+            p1_use = p1g[keep]
+        kept = int(np.count_nonzero(keep))
+        if kept < self._min_tracked:
+            self._p0 = None
+            return self._fallback_phase(prev_p, gray_p, requested)
+
         if self._quality_mode == "requested":
             denom = max(1, requested)
         else:
             denom = max(1, self._max_features)
-        quality = int(max(0.0, min(1.0, kept / denom)) * 255.0)
+        base_quality = max(0.0, min(1.0, kept / denom))
+        if self._quality_mad_px > 0.0 and mad > self._quality_mad_px:
+            base_quality *= max(0.0, min(1.0, self._quality_mad_px / mad))
+        motion_mag = float(math.hypot(dx_m, dy_m))
+        if self._quality_motion_px > 0.0:
+            motion_scale = self._quality_motion_px / max(self._quality_motion_px, motion_mag)
+            motion_scale = max(self._quality_motion_floor, motion_scale)
+            base_quality *= max(0.0, min(1.0, motion_scale))
+        if self._min_inlier_ratio > 0.0 and (kept / denom) < self._min_inlier_ratio:
+            base_quality = 0.0
+        quality = int(max(self._quality_min, min(self._quality_max, base_quality * 255.0)))
 
         yaw_rad = None
         geom_inliers = 0
-        if self._k is not None and tracked >= self._min_geom_matches:
-            yaw_rad, geom_inliers = self._estimate_yaw_from_geometry(p0g, p1g)
+        if self._k is not None and p0_use.shape[0] >= self._min_geom_matches:
+            yaw_rad, geom_inliers = self._estimate_yaw_from_geometry(p0_use, p1_use)
 
-        self._p0 = p1g.reshape(-1, 1, 2).astype(np.float32, copy=False)
+        if self._flow_deadband_px > 0.0 and motion_mag < self._flow_deadband_px:
+            dx_m = 0.0
+            dy_m = 0.0
+            motion_mag = 0.0
+
+        self._p0 = p1_use.reshape(-1, 1, 2).astype(np.float32, copy=False)
         return FlowResult(
             dx_px=dx_m,
             dy_px=dy_m,
@@ -342,7 +430,7 @@ class OpticalFlowEstimator:
             requested=requested,
             yaw_rad=yaw_rad,
             geom_inliers=geom_inliers,
-            motion_mag=float(math.hypot(dx_m, dy_m)),
+            motion_mag=motion_mag,
         )
 
 
@@ -355,6 +443,13 @@ class Px4FlowEstimator:
         self._tile_size = int(cfg.get("px4flow_tile_size", 8))
         self._num_blocks = int(cfg.get("px4flow_num_blocks", 5))
         self._min_count = int(cfg.get("px4flow_min_count", 10))
+        self._flow_deadband_px = float(cfg.get("flow_deadband_px", 0.6))
+        self._flow_edge_reject_margin_px = float(cfg.get("flow_edge_reject_margin_px", 0.25))
+        self._quality_mad_px = float(cfg.get("quality_mad_px", 0.6))
+        self._quality_motion_px = float(cfg.get("quality_motion_px", 0.4))
+        self._quality_motion_floor = float(cfg.get("quality_motion_floor", 0.2))
+        self._quality_min = int(cfg.get("quality_min", 0))
+        self._quality_max = int(cfg.get("quality_max", 255))
         outlier_mad = cfg.get("px4flow_outlier_mad", None)
         if outlier_mad is None:
             outlier_mad = cfg.get("outlier_reject_mad", 4.0)
@@ -522,7 +617,41 @@ class Px4FlowEstimator:
                     pass
             dx = sum_x / float(meancount)
             dy = sum_y / float(meancount)
+            if self._flow_deadband_px > 0.0:
+                if abs(dx) < self._flow_deadband_px:
+                    dx = 0.0
+                if abs(dy) < self._flow_deadband_px:
+                    dy = 0.0
             quality = int(max(0, min(255, (meancount * 255) // max(1, requested))))
+            try:
+                import numpy as np  # type: ignore
+
+                if samples_dx and self._quality_mad_px > 0.0:
+                    dx_arr = np.asarray(samples_dx, dtype=np.float64)
+                    dy_arr = np.asarray(samples_dy, dtype=np.float64)
+                    med_x = float(np.median(dx_arr))
+                    med_y = float(np.median(dy_arr))
+                    dev = np.hypot(dx_arr - med_x, dy_arr - med_y)
+                    mad = float(np.median(dev))
+                    if math.isfinite(mad) and mad > 1e-6:
+                        ratio = mad / max(1e-6, self._quality_mad_px)
+                        coherence = 1.0 / (1.0 + (ratio * ratio))
+                        quality = int(round(float(quality) * coherence))
+                if self._quality_motion_px > 0.0:
+                    motion_mag = math.hypot(float(dx), float(dy))
+                    motion_score = min(1.0, max(0.0, motion_mag / self._quality_motion_px))
+                    motion_floor = max(0.0, min(1.0, self._quality_motion_floor))
+                    motion_score = max(motion_floor, motion_score)
+                    quality = int(round(float(quality) * motion_score))
+            except Exception:
+                pass
+            if self._flow_edge_reject_margin_px >= 0.0:
+                edge = float(self._search_size) + float(self._flow_edge_reject_margin_px)
+                if abs(dx) >= edge or abs(dy) >= edge:
+                    dx = 0.0
+                    dy = 0.0
+                    quality = 0
+            quality = int(max(self._quality_min, min(self._quality_max, quality)))
         else:
             dx = 0.0
             dy = 0.0

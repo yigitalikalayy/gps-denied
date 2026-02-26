@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+LOG_DIR="${REPO_ROOT}/logs"
 DEFAULT_CONFIG="${ROOT_DIR}/config_sitl.json"
 if [ ! -f "${DEFAULT_CONFIG}" ]; then
   DEFAULT_CONFIG="${ROOT_DIR}/config.json"
@@ -114,4 +116,25 @@ fi
 
 cd "${ROOT_DIR}"
 export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"
-exec python3 -m px4flow_rpi.main --config "${CONFIG_PATH}"
+
+mkdir -p "${LOG_DIR}"
+timestamp="$(date +%Y%m%d_%H%M%S)"
+max_log=0
+shopt -s nullglob
+for f in "${LOG_DIR}"/log_*.txt; do
+  base="$(basename "${f}")"
+  n="${base#log_}"
+  n="${n%%_*}"
+  if [[ "${n}" =~ ^[0-9]+$ ]]; then
+    if ((10#${n} > max_log)); then
+      max_log=$((10#${n}))
+    fi
+  fi
+done
+shopt -u nullglob
+log_num=$((max_log + 1))
+log_file="$(printf "%s/log_%04d_%s.txt" "${LOG_DIR}" "${log_num}" "${timestamp}")"
+echo "[px4flow_rpi] logging to: ${log_file}"
+
+python3 -m px4flow_rpi.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
+exit ${PIPESTATUS[0]}

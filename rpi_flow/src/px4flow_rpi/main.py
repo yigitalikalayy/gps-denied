@@ -82,15 +82,20 @@ def main() -> int:
     flow_algo = str(flow_cfg.get("algorithm", "lk")).strip().lower()
     publish_hz = float(flow_cfg.get("publish_hz", 50))
     focal_length_px = float(flow_cfg.get("focal_length_px", 800.0))
+    px4flow_image_size = int(flow_cfg.get("px4flow_image_size", 64))
+    cam_width_cfg = int(cam_cfg.get("width", px4flow_image_size))
     if flow_algo in ("px4flow", "px4flow_cpp", "block", "block_match"):
-        try:
-            img_size = int(flow_cfg.get("px4flow_image_size", 64))
-            cam_w = int(cam_cfg.get("width", img_size))
-            if img_size > 0 and cam_w > 0:
-                focal_length_px = float(focal_length_px) * (float(img_size) / float(cam_w))
-        except Exception:
-            pass
+        if px4flow_image_size > 0 and cam_width_cfg > 0:
+            focal_length_px = float(focal_length_px) * (float(px4flow_image_size) / float(cam_width_cfg))
     axis_mode = str(flow_cfg.get("axis_mode", "")).strip().lower()
+    camera_backend = str(cam_cfg.get("backend", "")).strip().lower()
+    prefer_ros_stamp = camera_backend in ("ros1", "ros2")
+    force_px4flow = bool(flow_cfg.get("force_px4flow", False))
+    if prefer_ros_stamp and not force_px4flow and flow_algo in ("px4flow", "px4flow_cpp", "block", "block_match"):
+        flow_algo = "lk"
+        print("[px4flow_rpi] flow algorithm overridden to lk for ROS backend (set flow.force_px4flow=true to keep px4flow)")
+    if not axis_mode and prefer_ros_stamp:
+        axis_mode = "gazebo_plugin"
     axis_swap_xy = bool(flow_cfg.get("axis_swap_xy", True))
     axis_sign_x = float(flow_cfg.get("axis_sign_x", 1.0))
     axis_sign_y = float(flow_cfg.get("axis_sign_y", -1.0))
@@ -110,14 +115,34 @@ def main() -> int:
     flow_distance_cap_m = float(flow_cfg.get("distance_cap_m", 0.0))
     if flow_distance_cap_m < 0.0:
         flow_distance_cap_m = 0.0
+    flow_temporal_window = int(flow_cfg.get("temporal_window", 5))
+    if flow_temporal_window < 1:
+        flow_temporal_window = 1
+    flow_temporal_min_samples = min(3, flow_temporal_window)
+    flow_deadband_px = float(flow_cfg.get("flow_deadband_px", 0.0))
+    flow_max_vel_m_s = float(flow_cfg.get("max_vel_m_s", 0.0))
+    flow_max_px_per_frame = float(flow_cfg.get("max_px_per_frame", 0.0))
+    flow_spike_px = float(flow_cfg.get("spike_px", 0.0))
+    flow_min_quality = int(flow_cfg.get("min_quality", 0))
+    flow_bias_alpha = float(flow_cfg.get("bias_alpha", 0.01))
+    flow_bias_flow_thresh_px = float(flow_cfg.get("bias_flow_thresh_px", 1.0))
+    flow_bias_gyro_thresh = float(flow_cfg.get("bias_gyro_thresh_rad_s", 0.05))
+    gyro_comp_enable = bool(flow_cfg.get("gyro_comp_enable", False))
+    gyro_comp_scale = float(flow_cfg.get("gyro_comp_scale", 1.0))
+    gyro_comp_sign_x = float(flow_cfg.get("gyro_comp_sign_x", 1.0))
+    gyro_comp_sign_y = float(flow_cfg.get("gyro_comp_sign_y", 1.0))
 
     gyro_swap_xy = bool(gyro_cfg.get("axis_swap_xy", axis_swap_xy))
-    gyro_sign_x = float(gyro_cfg.get("axis_sign_x", 1.0))
-    gyro_sign_y = float(gyro_cfg.get("axis_sign_y", 1.0))
+    match_flow_signs = bool(gyro_cfg.get("match_flow_signs", False))
+    default_gyro_sign_x = axis_sign_x if match_flow_signs else 1.0
+    default_gyro_sign_y = axis_sign_y if match_flow_signs else 1.0
+    gyro_sign_x = float(gyro_cfg.get("axis_sign_x", default_gyro_sign_x))
+    gyro_sign_y = float(gyro_cfg.get("axis_sign_y", default_gyro_sign_y))
     gyro_sign_z = float(gyro_cfg.get("axis_sign_z", 1.0))
 
     print_hz = float(log_cfg.get("print_hz", 10))
     print_raw_flow = bool(log_cfg.get("print_raw_flow", True))
+    debug_gating = bool(log_cfg.get("debug_gating", False))
 
     # MAVLink message uses sensor_id (u8). PX4Flow uses a param; here we default to sysid.
     sensor_id = int(serial_cfg.get("sysid", 42)) & 0xFF
@@ -164,10 +189,16 @@ def main() -> int:
 
     sync = None
     sync_enabled = bool(sync_cfg.get("enabled", False))
+    sync_use_lk_yaw = bool(sync_cfg.get("use_lk_yaw", True))
+    time_source_mode = str(sync_cfg.get("time_source", "auto")).strip().lower()
+    if time_source_mode not in ("auto", "ros_stamp", "sync", "attitude", "attitude_interp", "monotonic"):
+        time_source_mode = "auto"
+    if time_source_mode == "auto" and prefer_ros_stamp:
+        time_source_mode = "ros_stamp"
     sync_cls = None
     sync_min_geom_inliers = max(0, int(sync_cfg.get("min_geom_inliers", 8)))
     sync_max_abs_yaw_delta = max(0.0, float(sync_cfg.get("max_abs_yaw_delta_rad", 0.05)))
-    if sync_enabled and serial_enabled:
+    if sync_enabled and serial_enabled and time_source_mode in ("auto", "sync"):
         from .time_sync import MotionBasedTimeSync
 
         sync_cls = MotionBasedTimeSync
@@ -236,11 +267,7 @@ def main() -> int:
     fq = _FrameQueue(cam, maxlen=queue_size) if threaded else None
 
     prev = fq.get_latest() if fq is not None else cam.read()
-    prev_time_s = (
-        float(prev.t_stamp_s)
-        if prev.t_stamp_s is not None and float(prev.t_stamp_s) > 0.0
-        else float(prev.t_monotonic)
-    )
+    prev_time_s = float(prev.t_monotonic)
     frame_count = 0
 
     sync_nominal_source = str(sync_cfg.get("nominal_fps_source", "runtime")).strip().lower()
@@ -267,10 +294,30 @@ def main() -> int:
             ],
             dtype=np.float64,
         )
+    else:
+        try:
+            fx = float(cam_k[0, 0])
+            fy = float(cam_k[1, 1])
+            f_mean = 0.5 * (fx + fy)
+            if math.isfinite(f_mean) and f_mean > 1.0:
+                scale = 1.0
+                if flow_algo in ("px4flow", "px4flow_cpp", "block", "block_match"):
+                    if px4flow_image_size > 0 and cam_width_cfg > 0:
+                        scale = float(px4flow_image_size) / float(cam_width_cfg)
+                focal_length_px = f_mean * scale
+        except Exception:
+            pass
     flow.set_camera_intrinsics(cam_k)
+
+    sync_flow = None
+    if sync_enabled and sync_use_lk_yaw and not isinstance(flow, OpticalFlowEstimator):
+        sync_flow = OpticalFlowEstimator(flow_cfg)
+        sync_flow.set_camera_intrinsics(cam_k)
+        print("[px4flow_rpi] time_sync yaw source=lk (secondary)")
 
     last_pub_t = prev.t_monotonic
     last_log_t = prev.t_monotonic
+    flow_temporal: collections.deque[tuple[float, float]] = collections.deque(maxlen=flow_temporal_window)
 
     integration_us = 0
     integrated_x = 0.0
@@ -284,12 +331,14 @@ def main() -> int:
     # Flow bias estimator to reduce slow drift when GPS is off.
     flow_bias_x = 0.0
     flow_bias_y = 0.0
-    flow_bias_alpha = 0.01
-    flow_bias_flow_thresh_px = 1.0
-    flow_bias_gyro_thresh = 0.05
+    flow_bias_alpha = max(0.0, min(1.0, flow_bias_alpha))
+    flow_bias_flow_thresh_px = max(0.0, flow_bias_flow_thresh_px)
+    flow_bias_gyro_thresh = max(0.0, flow_bias_gyro_thresh)
     last_time_usec = None
     last_time_source = "none"
     last_time_delta_us = None
+    ros_time_offset_s = None
+    ros_time_last_usec = None
 
     last_lidar = None
     last_lidar_t = None
@@ -443,11 +492,7 @@ def main() -> int:
             frame_count += 1
 
             fps = frame_rate.tick(fr.t_monotonic)
-            frame_time_s = (
-                float(fr.t_stamp_s)
-                if fr.t_stamp_s is not None and float(fr.t_stamp_s) > 0.0
-                else float(fr.t_monotonic)
-            )
+            frame_time_s = float(fr.t_monotonic)
             dt_s = max(1e-6, frame_time_s - prev_time_s)
             dt_us = int(dt_s * 1_000_000)
 
@@ -477,63 +522,35 @@ def main() -> int:
             else:
                 pix_x = r.dx_px
                 pix_y = r.dy_px
+            if flow_temporal_window > 1:
+                flow_temporal.append((float(pix_x), float(pix_y)))
+                if len(flow_temporal) >= flow_temporal_min_samples:
+                    xs = [p[0] for p in flow_temporal]
+                    ys = [p[1] for p in flow_temporal]
+                    pix_x = float(statistics.median(xs))
+                    pix_y = float(statistics.median(ys))
 
+            pix_x_meas = float(pix_x)
+            pix_y_meas = float(pix_y)
             g = bridge.read_gyro()
-            flow_x = axis_sign_x * (pix_x / focal_length_px)
-            flow_y = axis_sign_y * (pix_y / focal_length_px)
-            flow_mag_px = math.hypot(float(pix_x), float(pix_y))
-            if (
-                abs(g.x_rad_s) < flow_bias_gyro_thresh
-                and abs(g.y_rad_s) < flow_bias_gyro_thresh
-                and abs(g.z_rad_s) < flow_bias_gyro_thresh
-                and flow_mag_px < flow_bias_flow_thresh_px
-            ):
-                flow_bias_x = (1.0 - flow_bias_alpha) * flow_bias_x + flow_bias_alpha * flow_x
-                flow_bias_y = (1.0 - flow_bias_alpha) * flow_bias_y + flow_bias_alpha * flow_y
-            flow_x -= flow_bias_x
-            flow_y -= flow_bias_y
-            integrated_x += flow_x
-            integrated_y += flow_y
-            integration_us += dt_us
-            q_raw = int(r.quality_u8)
-            if quality_ema_alpha > 0.0:
-                if quality_ema is None:
-                    quality_ema = float(q_raw)
+            rot_px_x = 0.0
+            rot_px_y = 0.0
+            if gyro_comp_enable and dt_s > 0.0 and focal_length_px > 0.0:
+                if gyro_swap_xy:
+                    gyro_x = g.y_rad_s
+                    gyro_y = g.x_rad_s
                 else:
-                    quality_ema += quality_ema_alpha * (q_raw - quality_ema)
-                q_use = int(round(quality_ema))
-            else:
-                q_use = q_raw
-
-            quality_acc += int(q_use)
-            quality_n += 1
-
-            if gyro_swap_xy:
-                gyro_x = g.y_rad_s
-                gyro_y = g.x_rad_s
-            else:
-                gyro_x = g.x_rad_s
-                gyro_y = g.y_rad_s
-            integrated_xgyro += gyro_sign_x * gyro_x * dt_s
-            integrated_ygyro += gyro_sign_y * gyro_y * dt_s
-            integrated_zgyro += gyro_sign_z * g.z_rad_s * dt_s
-            if sync is not None:
-                yaw_delta_for_sync = None
-                if r.yaw_rad is not None:
-                    yaw_candidate = float(r.yaw_rad)
-                    if (
-                        math.isfinite(yaw_candidate)
-                        and r.geom_inliers >= sync_min_geom_inliers
-                        and abs(yaw_candidate) <= sync_max_abs_yaw_delta
-                    ):
-                        yaw_delta_for_sync = yaw_candidate
-                if yaw_delta_for_sync is not None:
-                    sync.push_camera_yaw_delta(
-                        frame_id=frame_count,
-                        yaw_delta_rad=yaw_delta_for_sync,
-                        t_monotonic=fr.t_monotonic,
-                        motion_hint=max(abs(g.z_rad_s), abs(r.motion_mag)),
-                    )
+                    gyro_x = g.x_rad_s
+                    gyro_y = g.y_rad_s
+                rot_px_x = (
+                    -gyro_comp_scale * gyro_comp_sign_x * gyro_y * float(focal_length_px) * dt_s
+                )
+                rot_px_y = (
+                    gyro_comp_scale * gyro_comp_sign_y * gyro_x * float(focal_length_px) * dt_s
+                )
+                if math.isfinite(rot_px_x) and math.isfinite(rot_px_y):
+                    pix_x = float(pix_x) - rot_px_x
+                    pix_y = float(pix_y) - rot_px_y
 
             distance_m = 0.0
             time_delta_distance_us = 0
@@ -561,6 +578,151 @@ def main() -> int:
                 if flow_distance_m > 0.0:
                     flow_distance_valid = True
 
+            q_raw = int(r.quality_u8)
+            q_pre = q_raw
+            pix_x_raw = float(pix_x)
+            pix_y_raw = float(pix_y)
+            flow_mag_px = math.hypot(float(pix_x_raw), float(pix_y_raw))
+            flow_mag_pre = flow_mag_px
+            max_px = 0.0
+            gating_reason = ""
+            deadband_applied = False
+            spike_applied = False
+            vel_cap_applied = False
+            if flow_mag_px == 0.0 and q_raw > 0:
+                deadband_applied = True
+                gating_reason = "deadband_hold"
+            if flow_deadband_px > 0.0 and flow_mag_px < flow_deadband_px:
+                pix_x = 0.0
+                pix_y = 0.0
+                flow_mag_px = 0.0
+                deadband_applied = True
+                if not gating_reason:
+                    gating_reason = "deadband_hold"
+            if flow_spike_px > 0.0 and flow_mag_px > flow_spike_px:
+                scale = flow_spike_px / max(1e-6, flow_mag_px)
+                pix_x *= scale
+                pix_y *= scale
+                flow_mag_px = flow_spike_px
+                q_raw = int(q_raw * max(0.1, min(1.0, scale)))
+                spike_applied = True
+                gating_reason = "spike_cap"
+            if flow_max_px_per_frame > 0.0:
+                max_px = float(flow_max_px_per_frame)
+            if flow_distance_valid and flow_max_vel_m_s > 0.0:
+                max_px_by_vel = (float(flow_max_vel_m_s) / float(flow_distance_m)) * float(focal_length_px) * dt_s
+                if max_px <= 0.0:
+                    max_px = max_px_by_vel
+                else:
+                    max_px = min(max_px, max_px_by_vel)
+            if max_px > 0.0 and flow_mag_px > max_px:
+                scale = max_px / max(1e-6, flow_mag_px)
+                pix_x *= scale
+                pix_y *= scale
+                flow_mag_px = max_px
+                vel_cap_applied = True
+                q_raw = int(q_raw * max(0.1, min(1.0, scale)))
+                if scale < 0.25:
+                    if gating_reason:
+                        gating_reason += "+vel_cap_hard"
+                    else:
+                        gating_reason = "vel_cap_hard"
+                else:
+                    if gating_reason:
+                        gating_reason += "+vel_cap"
+                    else:
+                        gating_reason = "vel_cap"
+            if (not deadband_applied) and flow_min_quality > 0 and q_pre < flow_min_quality:
+                pix_x = 0.0
+                pix_y = 0.0
+                flow_mag_px = 0.0
+                q_raw = 0
+                if gating_reason:
+                    gating_reason += "+min_quality"
+                else:
+                    gating_reason = "min_quality"
+
+            flow_x = axis_sign_x * (pix_x / focal_length_px)
+            flow_y = axis_sign_y * (pix_y / focal_length_px)
+            flow_x_raw = axis_sign_x * (pix_x_raw / focal_length_px)
+            flow_y_raw = axis_sign_y * (pix_y_raw / focal_length_px)
+            if (
+                q_pre > 0
+                and not spike_applied
+                and not vel_cap_applied
+                and abs(g.x_rad_s) < flow_bias_gyro_thresh
+                and abs(g.y_rad_s) < flow_bias_gyro_thresh
+                and abs(g.z_rad_s) < flow_bias_gyro_thresh
+                and flow_mag_pre < flow_bias_flow_thresh_px
+            ):
+                flow_bias_x = (1.0 - flow_bias_alpha) * flow_bias_x + flow_bias_alpha * flow_x_raw
+                flow_bias_y = (1.0 - flow_bias_alpha) * flow_bias_y + flow_bias_alpha * flow_y_raw
+            flow_x -= flow_bias_x
+            flow_y -= flow_bias_y
+            integrated_x += flow_x
+            integrated_y += flow_y
+            integration_us += dt_us
+            if debug_gating and (gating_reason or q_raw != q_pre):
+                v_pre = 0.0
+                v_cap = 0.0
+                if flow_distance_valid and dt_s > 1e-6:
+                    v_pre = (flow_mag_pre / focal_length_px) * flow_distance_m / dt_s
+                    if max_px > 0.0:
+                        v_cap = (max_px / focal_length_px) * flow_distance_m / dt_s
+                print(
+                    f"gate reason={gating_reason or 'quality_scale'} "
+                    f"q_raw={q_pre} q_use={q_raw} min_q={flow_min_quality} "
+                    f"pix=({pix_x:+.2f},{pix_y:+.2f}) mag={flow_mag_px:.2f} mag_pre={flow_mag_pre:.2f} "
+                    f"meas=({pix_x_meas:+.2f},{pix_y_meas:+.2f}) rot=({rot_px_x:+.2f},{rot_px_y:+.2f}) "
+                    f"max_px={max_px:.2f} v_pre={v_pre:.2f} v_cap={v_cap:.2f} dt={dt_s:.3f} "
+                    f"dist_cap={flow_distance_m:.2f}m dist_raw={distance_m:.2f}m "
+                    f"bias=({flow_bias_x:+.5f},{flow_bias_y:+.5f})"
+                )
+            if quality_ema_alpha > 0.0:
+                if quality_ema is None:
+                    quality_ema = float(q_raw)
+                else:
+                    quality_ema += quality_ema_alpha * (q_raw - quality_ema)
+                q_use = int(round(quality_ema))
+            else:
+                q_use = q_raw
+
+            quality_acc += int(q_use)
+            quality_n += 1
+
+            if gyro_swap_xy:
+                gyro_x = g.y_rad_s
+                gyro_y = g.x_rad_s
+            else:
+                gyro_x = g.x_rad_s
+                gyro_y = g.y_rad_s
+            integrated_xgyro += gyro_sign_x * gyro_x * dt_s
+            integrated_ygyro += gyro_sign_y * gyro_y * dt_s
+            integrated_zgyro += gyro_sign_z * g.z_rad_s * dt_s
+            sync_r = r
+            if sync is not None and sync_flow is not None and r.yaw_rad is None:
+                sync_r = sync_flow.estimate(prev.gray, fr.gray)
+            if sync is not None:
+                yaw_delta_for_sync = None
+                if sync_r is not None and sync_r.yaw_rad is not None:
+                    yaw_candidate = float(sync_r.yaw_rad)
+                    if (
+                        math.isfinite(yaw_candidate)
+                        and sync_r.geom_inliers >= sync_min_geom_inliers
+                        and abs(yaw_candidate) <= sync_max_abs_yaw_delta
+                    ):
+                        yaw_delta_for_sync = yaw_candidate
+                if yaw_delta_for_sync is not None:
+                    motion_hint = abs(r.motion_mag)
+                    if sync_r is not None:
+                        motion_hint = max(motion_hint, abs(sync_r.motion_mag))
+                    sync.push_camera_yaw_delta(
+                        frame_id=frame_count,
+                        yaw_delta_rad=yaw_delta_for_sync,
+                        t_monotonic=fr.t_monotonic,
+                        motion_hint=max(abs(g.z_rad_s), motion_hint),
+                    )
+
             now = fr.t_monotonic
             if (now - last_pub_t) >= pub_period and integration_us > 0:
                 quality = int(round(quality_acc / max(1, quality_n)))
@@ -570,24 +732,96 @@ def main() -> int:
                     att_time = bridge.read_time_boot_ms_with_wall()
                 time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
                 time_usec = int(time_boot_ms) * 1000
+                ros_usec = None
+                ros_adj_usec = None
                 if fr.t_stamp_s is not None and float(fr.t_stamp_s) > 0.0:
-                    time_usec = int(float(fr.t_stamp_s) * 1_000_000.0)
-                    time_boot_ms = int(time_usec // 1000)
-                    time_source = "ros_stamp"
-                else:
-                    if sync is not None:
-                        sync_usec = sync.estimate_frame_time_usec(frame_count)
-                        if sync_usec is not None:
-                            time_usec = int(sync_usec)
-                            time_source = "sync"
-                    if att_time is not None:
-                        att_boot_ms, att_wall = att_time
-                        att_age_s = max(0.0, float(now - att_wall))
-                        time_boot_ms = int(float(att_boot_ms) + att_age_s * 1_000.0)
-                        time_usec = int(time_boot_ms) * 1000
-                        time_source = "attitude_interp"
+                    ros_usec = int(float(fr.t_stamp_s) * 1_000_000.0)
+                    ros_sec = float(ros_usec) * 1e-6
+                    if ros_time_offset_s is None:
+                        ros_time_offset_s = ros_sec - now
+                    else:
+                        target_offset = ros_sec - now
+                        if math.isfinite(target_offset):
+                            # Smooth large ROS stamp jitter while keeping monotonic progress.
+                            alpha = 0.02
+                            if abs(target_offset - ros_time_offset_s) > 0.5:
+                                ros_time_offset_s = target_offset
+                            else:
+                                ros_time_offset_s += alpha * (target_offset - ros_time_offset_s)
+                    if ros_time_offset_s is not None:
+                        ros_adj_usec = int((now + ros_time_offset_s) * 1_000_000.0)
+                        if ros_time_last_usec is not None and ros_adj_usec <= ros_time_last_usec:
+                            ros_adj_usec = int(ros_time_last_usec + 1)
+                        ros_time_last_usec = ros_adj_usec
+                sync_usec = None
+                sync_healthy = False
+                if sync is not None:
+                    sync_usec = sync.estimate_frame_time_usec(frame_count)
+                    sync_state = sync.read_state()
+                    sync_healthy = bool(sync_state.ready) and sync_state.health_status == "healthy"
+                att_usec = None
+                if att_time is not None:
+                    att_boot_ms, att_wall = att_time
+                    att_age_s = max(0.0, float(now - att_wall))
+                    att_boot_ms = int(float(att_boot_ms) + att_age_s * 1_000.0)
+                    att_usec = int(att_boot_ms) * 1000
 
-                if last_time_usec is not None:
+                if time_source_mode == "ros_stamp":
+                    if ros_adj_usec is not None:
+                        time_usec = int(ros_adj_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp_adj"
+                    elif ros_usec is not None:
+                        time_usec = int(ros_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp"
+                    else:
+                        time_source = "ros_stamp_unavailable"
+                elif time_source_mode in ("attitude", "attitude_interp"):
+                    if att_usec is not None:
+                        time_usec = int(att_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "attitude_interp"
+                    else:
+                        time_source = "attitude_unavailable"
+                elif time_source_mode == "sync":
+                    if sync_usec is not None:
+                        time_usec = int(sync_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "sync"
+                    else:
+                        time_source = "sync_unavailable"
+                elif time_source_mode == "monotonic":
+                    time_source = "monotonic"
+                else:
+                    if sync_usec is not None and sync_healthy:
+                        time_usec = int(sync_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "sync"
+                    elif prefer_ros_stamp and ros_adj_usec is not None:
+                        time_usec = int(ros_adj_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp_adj"
+                    elif prefer_ros_stamp and ros_usec is not None:
+                        time_usec = int(ros_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp"
+                    elif att_usec is not None:
+                        time_usec = int(att_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "attitude_interp"
+                    elif ros_adj_usec is not None:
+                        time_usec = int(ros_adj_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp_adj"
+                    elif ros_usec is not None:
+                        time_usec = int(ros_usec)
+                        time_boot_ms = int(time_usec // 1000)
+                        time_source = "ros_stamp"
+                    else:
+                        time_source = "monotonic"
+
+                if last_time_usec is not None and not time_source.startswith("ros_stamp"):
                     guard_us = max(1, int(integration_us))
                     pub_us = max(1, int(pub_period * 1_000_000))
                     min_next_usec = int(last_time_usec + max(guard_us, pub_us // 2))
@@ -647,8 +881,11 @@ def main() -> int:
                     flow_comp_m_y = 0.0
                     ground_distance = 0.0
                     if flow_distance_valid:
-                        flow_comp_m_x = float(integrated_x) * float(flow_distance_m)
-                        flow_comp_m_y = float(integrated_y) * float(flow_distance_m)
+                        dt_flow_s = max(1e-6, float(integration_us) * 1e-6)
+                        flow_rate_x = float(integrated_x) / dt_flow_s
+                        flow_rate_y = float(integrated_y) / dt_flow_s
+                        flow_comp_m_x = float(flow_rate_x) * float(flow_distance_m)
+                        flow_comp_m_y = float(flow_rate_y) * float(flow_distance_m)
                         ground_distance = float(flow_distance_m)
                     flow_x = int(round(float(pix_x) * optical_flow_pixel_scale))
                     flow_y = int(round(float(pix_y) * optical_flow_pixel_scale))
