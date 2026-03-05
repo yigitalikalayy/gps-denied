@@ -49,7 +49,7 @@
   },
   "flow": {
     "algorithm": "px4flow",
-    "axis_mode": "",
+    "axis_mode": "gazebo_plugin",
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
     "axis_swap_xy": true,
@@ -126,11 +126,17 @@
     "axis_sign_y": 1.0,
     "axis_sign_z": 1.0,
     "axis_swap_xy": false,
+    "backend": "ros1",
+    "frame": "ros_flu",
+    "topic": "/mavros/imu/data_raw",
     "use_autopilot_imu": true
   },
   "lidar": {
     "backend": "ros1",
     "enabled": true,
+    "mavlink": {
+      "orientation": 24
+    },
     "poll_hz": 50,
     "ros_timeout_s": 1.0,
     "topic": "/distance_sensor"

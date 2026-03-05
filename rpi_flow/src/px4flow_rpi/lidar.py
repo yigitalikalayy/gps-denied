@@ -179,6 +179,7 @@ class Ros1RangeSubscriber:
                 return
             if not (d > 0.0):
                 return
+            d = float(round(d, 2))
             sample = LidarSample(distance_m=d, t_monotonic=time.monotonic())
             with self._cv:
                 self._queue.append(sample)
