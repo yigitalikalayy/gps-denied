@@ -32,6 +32,12 @@ class GyroState:
 
 
 @dataclass
+class AttTime:
+    time_boot_ms: int = 0
+    t_wall: float = 0.0
+
+
+@dataclass
 class ImuYawSample:
     t_imu_s: float
     yaw_rad: float
@@ -53,6 +59,8 @@ class MavlinkBridge:
 
         self._gyro = GyroState()
         self._gyro_lock = threading.Lock()
+        self._att_time = AttTime()
+        self._att_lock = threading.Lock()
         yaw_buf_cfg = cfg.get("yaw_buffer", {}) if isinstance(cfg.get("yaw_buffer", {}), dict) else {}
         self._yaw_max_samples = max(64, int(yaw_buf_cfg.get("max_samples", 6000)))
         self._yaw_samples: collections.deque[ImuYawSample] = collections.deque(maxlen=self._yaw_max_samples)
@@ -162,9 +170,15 @@ class MavlinkBridge:
                                 self._gyro.t_wall = f.timestamp
                     elif f.msgid == 30 and len(f.payload) >= 16:
                         att = Attitude.decode(f.payload)
+                        with self._att_lock:
+                            self._att_time.time_boot_ms = int(att.time_boot_ms)
+                            self._att_time.t_wall = f.timestamp
                         self._append_yaw_sample(float(att.time_boot_ms) * 1e-3, float(att.yaw), f.timestamp)
                     elif f.msgid == 31 and len(f.payload) >= 20:
                         attq = AttitudeQuaternion.decode(f.payload)
+                        with self._att_lock:
+                            self._att_time.time_boot_ms = int(attq.time_boot_ms)
+                            self._att_time.t_wall = f.timestamp
                         self._append_yaw_sample(float(attq.time_boot_ms) * 1e-3, float(attq.yaw_rad()), f.timestamp)
                 except Exception:
                     continue
@@ -240,6 +254,28 @@ class MavlinkBridge:
             cutoff = newest_t - float(max_age_s)
             out = [s for s in out if s.t_imu_s >= cutoff]
         return out
+
+    def read_time_boot_ms(self, max_age_s: float | None = None) -> int | None:
+        if max_age_s is None:
+            max_age_s = self._gyro_max_age_s
+        with self._att_lock:
+            if self._att_time.time_boot_ms <= 0:
+                return None
+            if max_age_s and max_age_s > 0.0:
+                if (time.monotonic() - self._att_time.t_wall) > max_age_s:
+                    return None
+            return int(self._att_time.time_boot_ms)
+
+    def read_time_boot_ms_with_wall(self, max_age_s: float | None = None) -> tuple[int, float] | None:
+        if max_age_s is None:
+            max_age_s = self._gyro_max_age_s
+        with self._att_lock:
+            if self._att_time.time_boot_ms <= 0:
+                return None
+            if max_age_s and max_age_s > 0.0:
+                if (time.monotonic() - self._att_time.t_wall) > max_age_s:
+                    return None
+            return int(self._att_time.time_boot_ms), float(self._att_time.t_wall)
 
     def send_optical_flow_rad(
         self,

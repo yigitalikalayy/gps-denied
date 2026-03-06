@@ -239,6 +239,7 @@ def main() -> int:
     quality_acc = 0
     quality_n = 0
     quality_ema = None
+    last_time_usec = None
 
     last_lidar = None
     last_lidar_t = None
@@ -482,11 +483,24 @@ def main() -> int:
             if (now - last_pub_t) >= pub_period and integration_us > 0:
                 quality = int(round(quality_acc / max(1, quality_n)))
                 time_usec = _monotonic_to_time_usec(t0_mono, t0_time, now)
+                time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
+                if serial_enabled:
+                    att_time = bridge.read_time_boot_ms_with_wall()
+                    if att_time is not None:
+                        att_boot_ms, att_wall = att_time
+                        att_age_s = max(0.0, float(now - att_wall))
+                        att_boot_ms = int(float(att_boot_ms) + att_age_s * 1_000.0)
+                        time_boot_ms = int(att_boot_ms)
+                        time_usec = int(time_boot_ms) * 1000
                 if sync is not None:
                     sync_usec = sync.estimate_frame_time_usec(frame_count)
                     if sync_usec is not None:
                         time_usec = int(sync_usec)
-                time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
+                        time_boot_ms = int(time_usec // 1000)
+                if last_time_usec is not None and time_usec <= last_time_usec:
+                    time_usec = int(last_time_usec + 1)
+                    time_boot_ms = int(time_usec // 1000)
+                last_time_usec = int(time_usec)
 
                 bridge.send_optical_flow_rad(
                     time_usec=time_usec,
