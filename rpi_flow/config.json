@@ -90,6 +90,8 @@
   },
   "gyro": {
     "use_autopilot_imu": true,
+    "axis_swap_xy": false,
+    "match_flow_signs": false,
     "axis_sign_x": 1.0,
     "axis_sign_y": 1.0,
     "axis_sign_z": 1.0

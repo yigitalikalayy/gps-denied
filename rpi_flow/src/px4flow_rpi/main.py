@@ -87,8 +87,12 @@ def main() -> int:
     quality_ema_alpha = float(flow_cfg.get("quality_ema_alpha", 0.0))
     quality_ema_alpha = max(0.0, min(1.0, quality_ema_alpha))
 
-    gyro_sign_x = float(gyro_cfg.get("axis_sign_x", 1.0))
-    gyro_sign_y = float(gyro_cfg.get("axis_sign_y", 1.0))
+    gyro_swap_xy = bool(gyro_cfg.get("axis_swap_xy", axis_swap_xy))
+    match_flow_signs = bool(gyro_cfg.get("match_flow_signs", False))
+    default_gyro_sign_x = axis_sign_x if match_flow_signs else 1.0
+    default_gyro_sign_y = axis_sign_y if match_flow_signs else 1.0
+    gyro_sign_x = float(gyro_cfg.get("axis_sign_x", default_gyro_sign_x))
+    gyro_sign_y = float(gyro_cfg.get("axis_sign_y", default_gyro_sign_y))
     gyro_sign_z = float(gyro_cfg.get("axis_sign_z", 1.0))
 
     print_hz = float(log_cfg.get("print_hz", 10))
@@ -440,8 +444,14 @@ def main() -> int:
             quality_n += 1
 
             g = bridge.read_gyro()
-            integrated_xgyro += gyro_sign_x * g.x_rad_s * dt_s
-            integrated_ygyro += gyro_sign_y * g.y_rad_s * dt_s
+            if gyro_swap_xy:
+                gyro_x = g.y_rad_s
+                gyro_y = g.x_rad_s
+            else:
+                gyro_x = g.x_rad_s
+                gyro_y = g.y_rad_s
+            integrated_xgyro += gyro_sign_x * gyro_x * dt_s
+            integrated_ygyro += gyro_sign_y * gyro_y * dt_s
             integrated_zgyro += gyro_sign_z * g.z_rad_s * dt_s
             if sync is not None:
                 yaw_delta_for_sync = None
