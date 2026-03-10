@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
-LOG_DIR="${REPO_ROOT}/logs"
 DEFAULT_CONFIG="${REPO_ROOT}/config_sitl.json"
 if [ ! -f "${DEFAULT_CONFIG}" ]; then
   DEFAULT_CONFIG="${REPO_ROOT}/config.json"
@@ -31,6 +30,24 @@ try:
     cam = data.get("camera", {}) if isinstance(data, dict) else {}
     backend = cam.get("backend", "") if isinstance(cam, dict) else ""
     print(str(backend).strip().lower())
+except Exception:
+    print("")
+PY
+}
+
+detect_log_dir() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    logging_cfg = data.get("logging", {}) if isinstance(data, dict) else {}
+    flight_log = logging_cfg.get("flight_log", {}) if isinstance(logging_cfg, dict) else {}
+    log_dir = flight_log.get("dir", "") if isinstance(flight_log, dict) else ""
+    print(str(log_dir).strip())
 except Exception:
     print("")
 PY
@@ -107,6 +124,16 @@ kill_camera_users() {
 }
 
 CAM_BACKEND="$(detect_camera_backend "${CONFIG_PATH}")"
+LOG_DIR_REL="$(detect_log_dir "${CONFIG_PATH}")"
+if [ -z "${LOG_DIR_REL}" ]; then
+  LOG_DIR="${REPO_ROOT}/logs"
+else
+  if [[ "${LOG_DIR_REL}" = /* ]]; then
+    LOG_DIR="${LOG_DIR_REL}"
+  else
+    LOG_DIR="${REPO_ROOT}/${LOG_DIR_REL}"
+  fi
+fi
 maybe_source_ros2 "${CAM_BACKEND}"
 maybe_source_ros1 "${CAM_BACKEND}"
 
