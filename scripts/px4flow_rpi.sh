@@ -14,6 +14,24 @@ if [ "$(id -u)" -ne 0 ]; then
   fi
 fi
 
+detect_log_dir() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    logging_cfg = data.get("logging", {}) if isinstance(data, dict) else {}
+    flight_log = logging_cfg.get("flight_log", {}) if isinstance(logging_cfg, dict) else {}
+    log_dir = flight_log.get("dir", "") if isinstance(flight_log, dict) else ""
+    print(str(log_dir).strip())
+except Exception:
+    print("")
+PY
+}
+
 kill_camera_users() {
   echo "[px4flow_rpi] freeing camera resources..."
 
@@ -37,4 +55,35 @@ kill_camera_users
 
 cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
-exec python3 -m optical_flow.main --config "${CONFIG_PATH}"
+LOG_DIR_REL="$(detect_log_dir "${CONFIG_PATH}")"
+if [ -z "${LOG_DIR_REL}" ]; then
+  LOG_DIR="${REPO_ROOT}/logs"
+else
+  if [[ "${LOG_DIR_REL}" = /* ]]; then
+    LOG_DIR="${LOG_DIR_REL}"
+  else
+    LOG_DIR="${REPO_ROOT}/${LOG_DIR_REL}"
+  fi
+fi
+
+mkdir -p "${LOG_DIR}"
+timestamp="$(date +%Y%m%d_%H%M%S)"
+max_log=0
+shopt -s nullglob
+for f in "${LOG_DIR}"/log_*.txt; do
+  base="$(basename "${f}")"
+  n="${base#log_}"
+  n="${n%%_*}"
+  if [[ "${n}" =~ ^[0-9]+$ ]]; then
+    if ((10#${n} > max_log)); then
+      max_log=$((10#${n}))
+    fi
+  fi
+done
+shopt -u nullglob
+log_num=$((max_log + 1))
+log_file="$(printf "%s/log_%04d_%s.txt" "${LOG_DIR}" "${log_num}" "${timestamp}")"
+echo "[px4flow_rpi] logging to: ${log_file}"
+
+python3 -m optical_flow.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
+exit ${PIPESTATUS[0]}
