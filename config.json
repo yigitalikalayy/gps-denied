@@ -157,6 +157,12 @@
   },
   "logging": {
     "print_hz": 5,
-    "print_raw_flow": false
+    "print_raw_flow": false,
+    "flight_log": {
+      "enabled": true,
+      "dir": "logs/flights",
+      "file_prefix": "flight",
+      "flush_interval_s": 1.0
+    }
   }
 }

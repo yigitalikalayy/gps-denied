@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/px4flow-rpi/rpi_flow
-ExecStart=/opt/px4flow-rpi/rpi_flow/px4flow_rpi.sh /opt/px4flow-rpi/rpi_flow/config.json
+WorkingDirectory=/opt/gps-denied-navigation
+ExecStart=/opt/gps-denied-navigation/scripts/px4flow_rpi.sh /opt/gps-denied-navigation/config.json
 Restart=on-failure
 RestartSec=1
 User=root

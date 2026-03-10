@@ -11,6 +11,7 @@ from .camera import Camera
 from .config import AppConfig
 from .flow_estimator import OpticalFlowEstimator
 from .stats import Rate
+from .flight_logger import FlightLogger
 
 
 def _monotonic_to_time_usec(t0_monotonic: float, t0_time: float, t_monotonic: float) -> int:
@@ -97,6 +98,8 @@ def main() -> int:
 
     print_hz = float(log_cfg.get("print_hz", 10))
     print_raw_flow = bool(log_cfg.get("print_raw_flow", True))
+    flight_log_cfg = log_cfg.get("flight_log", {}) if isinstance(log_cfg.get("flight_log", {}), dict) else {}
+    flight_logger = FlightLogger(flight_log_cfg)
 
     # MAVLink message uses sensor_id (u8). PX4Flow uses a param; here we default to sysid.
     sensor_id = int(serial_cfg.get("sysid", 42)) & 0xFF
@@ -106,7 +109,7 @@ def main() -> int:
 
     serial_enabled = bool(serial_cfg.get("enabled", True))
     if serial_enabled:
-        from .mavlink_bridge import MavlinkBridge  # local import: allow PC testing without pyserial
+        from mavlink_bridge.mavlink_bridge import MavlinkBridge  # local import: allow PC testing without pyserial
 
         bridge = MavlinkBridge(serial_cfg)
     else:
@@ -147,11 +150,11 @@ def main() -> int:
     if bool(lidar_cfg.get("enabled", True)):
         backend = str(lidar_cfg.get("backend", "lw20_ascii"))
         if backend == "lw20_ascii":
-            from .lidar import LightwareLw20AsciiI2C
+            from sensors.lidar import LightwareLw20AsciiI2C
 
             lidar = LightwareLw20AsciiI2C(lidar_cfg)
         elif backend in ("lw20_binary", "lw20b_binary"):
-            from .lidar import LightwareLw20BinaryI2C
+            from sensors.lidar import LightwareLw20BinaryI2C
 
             lidar = LightwareLw20BinaryI2C(lidar_cfg)
         else:
@@ -512,6 +515,51 @@ def main() -> int:
                     time_boot_ms = int(time_usec // 1000)
                 last_time_usec = int(time_usec)
 
+                flow_px_x = float(r.dx_px)
+                flow_px_y = float(r.dy_px)
+                flow_rad_x = float(flow_px_x / focal_length_px)
+                flow_rad_y = float(flow_px_y / focal_length_px)
+                feature_count = int(r.requested)
+                tracked_features = int(r.tracked)
+                tracking_loss_rate = 0.0
+                if feature_count > 0:
+                    tracking_loss_rate = max(0.0, 1.0 - (tracked_features / float(feature_count)))
+
+                raw_range = None
+                filtered_range = None
+                range_delay_us = None
+                range_valid = bool(distance_valid)
+                with lidar_lock:
+                    if last_lidar is not None:
+                        raw_range = float(last_lidar.distance_m)
+                    if last_lidar_used is not None:
+                        filtered_range = float(last_lidar_used)
+                if distance_valid:
+                    range_delay_us = int(time_delta_distance_us)
+
+                flight_logger.log(
+                    timestamp_s=float(fr.t_stamp_s if fr.t_stamp_s is not None else fr.t_monotonic),
+                    frame_id=int(frame_count),
+                    feature_count=feature_count,
+                    tracked_feature_count=tracked_features,
+                    tracking_loss_rate=tracking_loss_rate,
+                    flow_px_x=flow_px_x,
+                    flow_px_y=flow_px_y,
+                    flow_rad_x=flow_rad_x,
+                    flow_rad_y=flow_rad_y,
+                    flow_quality=int(quality),
+                    gyro_x=float(g.x_rad_s),
+                    gyro_y=float(g.y_rad_s),
+                    gyro_z=float(g.z_rad_s),
+                    integrated_xgyro=float(integrated_xgyro),
+                    integrated_ygyro=float(integrated_ygyro),
+                    integrated_zgyro=float(integrated_zgyro),
+                    raw_range=raw_range,
+                    filtered_range=filtered_range,
+                    range_valid=range_valid,
+                    range_delay_us=range_delay_us,
+                )
+
                 bridge.send_optical_flow_rad(
                     time_usec=time_usec,
                     sensor_id=sensor_id,
@@ -610,6 +658,10 @@ def main() -> int:
         try:
             if sync is not None:
                 sync.close()
+        except Exception:
+            pass
+        try:
+            flight_logger.close()
         except Exception:
             pass
         try:

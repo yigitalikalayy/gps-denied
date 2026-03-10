@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PATH="${1:-${ROOT_DIR}/config.json}"
+REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
+CONFIG_PATH="${1:-${REPO_ROOT}/config.json}"
 
 echo "[px4flow_rpi] using config: ${CONFIG_PATH}"
 
@@ -34,6 +35,6 @@ kill_camera_users() {
 
 kill_camera_users
 
-cd "${ROOT_DIR}"
-export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"
-exec python3 -m px4flow_rpi.main --config "${CONFIG_PATH}"
+cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
+exec python3 -m optical_flow.main --config "${CONFIG_PATH}"
