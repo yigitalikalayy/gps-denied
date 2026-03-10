@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
 LOG_DIR="${REPO_ROOT}/logs"
-DEFAULT_CONFIG="${ROOT_DIR}/config_sitl.json"
+DEFAULT_CONFIG="${REPO_ROOT}/config_sitl.json"
 if [ ! -f "${DEFAULT_CONFIG}" ]; then
-  DEFAULT_CONFIG="${ROOT_DIR}/config.json"
+  DEFAULT_CONFIG="${REPO_ROOT}/config.json"
 fi
 CONFIG_PATH="${1:-${DEFAULT_CONFIG}}"
 
@@ -114,8 +114,8 @@ if [ "${CAM_BACKEND}" = "picamera2" ] || [ "${CAM_BACKEND}" = "opencv" ]; then
   kill_camera_users
 fi
 
-cd "${ROOT_DIR}"
-export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"
+cd "${REPO_ROOT}"
+export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
 mkdir -p "${LOG_DIR}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
@@ -136,5 +136,5 @@ log_num=$((max_log + 1))
 log_file="$(printf "%s/log_%04d_%s.txt" "${LOG_DIR}" "${log_num}" "${timestamp}")"
 echo "[px4flow_rpi] logging to: ${log_file}"
 
-python3 -m px4flow_rpi.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
+python3 -m optical_flow.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
 exit ${PIPESTATUS[0]}

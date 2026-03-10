@@ -4,8 +4,8 @@ import argparse
 import time
 from typing import Any
 
-from .config import AppConfig
-from .lidar import LightwareLw20AsciiI2C, LightwareLw20BinaryI2C
+from optical_flow.config import AppConfig
+from sensors.lidar import LightwareLw20AsciiI2C, LightwareLw20BinaryI2C
 
 
 def _build_lidar(cfg: dict[str, Any]):

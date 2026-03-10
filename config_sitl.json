@@ -1,9 +1,9 @@
 {
   "camera": {
-    "backend": "picamera2",
+    "backend": "ros1",
     "calibration": {
       "base_dir": ".",
-      "cache_file": "calib/calibration_ov9281.json",
+      "cache_file": "",
       "camera_matrix": [
         [
           3358.281617164202,
@@ -21,10 +21,6 @@
           1.0
         ]
       ],
-      "chessboard_size": [
-        9,
-        6
-      ],
       "dist_coeffs": [
         0.0,
         0.0,
@@ -33,62 +29,76 @@
         0.0
       ],
       "enabled": true,
-      "images_glob": "calib/*.png",
-      "min_images": 8,
       "mode": "precomputed",
-      "prefer_cache": true,
+      "prefer_cache": false,
       "rectify_alpha": 0.0,
-      "square_size": 0.024,
-      "use_find_chessboard_sb": true
+      "rms": 0.0
     },
-    "controls": {
-      "AeEnable": false,
-      "AnalogueGain": 1.0,
-      "ExposureTime": 5000,
-      "FrameDurationLimits": [
-        11111,
-        11111
-      ]
-    },
-    "device": 0,
-    "fps": 90,
-    "grayscale": true,
+    "fps": 120,
     "height": 400,
     "queue_size": 2,
     "roi": null,
+    "ros_node_name": "px4flow_rpi_sitl_camera",
+    "ros_qos_depth": 5,
+    "ros_qos_reliability": "best_effort",
+    "ros_spin_timeout_s": 0.02,
+    "ros_timeout_s": 1.0,
     "threaded": true,
+    "topic": "/camera/image_raw",
     "width": 640
   },
   "flow": {
+    "algorithm": "px4flow",
+    "axis_mode": "gazebo_plugin",
     "axis_sign_x": 1.0,
     "axis_sign_y": -1.0,
     "axis_swap_xy": true,
     "bias_alpha": 0.12,
     "bias_flow_thresh_px": 20.0,
     "bias_gyro_thresh_rad_s": 0.3,
+    "distance_cap_m": 25.0,
     "essential_confidence": 0.999,
     "essential_ransac_thresh_px": 1.0,
-    "fallback_min_response": 0.0,
+    "fallback_min_response": 0.2,
     "fallback_mode": "phase",
     "fallback_scale": 0.5,
+    "feature_border_px": 8,
     "feature_detector": "shi_tomasi",
-    "feature_max": 300,
-    "feature_min_distance": 3,
-    "feature_quality": 0.0005,
+    "feature_max": 500,
+    "feature_min_distance": 4,
+    "feature_quality": 0.0003,
+    "flow_deadband_px": 0.2,
+    "flow_edge_reject_margin_px": 0.25,
     "focal_length_px": 3358.281617164202,
     "fundamental_confidence": 0.99,
     "fundamental_max_iters": 2000,
     "fundamental_ransac_thresh_px": 1.5,
     "gyro_comp_enable": true,
-    "gyro_comp_scale": 0.3,
+    "gyro_comp_scale": 0.2,
     "gyro_comp_sign_x": 1.0,
     "gyro_comp_sign_y": 1.0,
+    "lk_fb_check": true,
+    "lk_fb_thresh_px": 2.5,
     "lk_max_level": 3,
+    "lk_ransac": true,
+    "lk_ransac_adaptive": true,
+    "lk_ransac_confidence": 0.99,
+    "lk_ransac_max_iters": 2000,
+    "lk_ransac_thresh_px": 3.0,
+    "lk_ransac_thresh_min_px": 0.8,
+    "lk_ransac_thresh_max_px": 3.5,
+    "lk_ransac_thresh_k": 2.5,
+    "lk_ransac_thresh_bias": 0.3,
+    "lk_ransac_motion_scale": 0.03,
     "lk_win_size": 21,
+    "max_px_per_frame": 60.0,
     "max_vel_m_s": 5.0,
     "min_geom_matches": 8,
-    "min_tracked_features": 3,
-    "outlier_reject_mad": 5.0,
+    "min_inlier_ratio": 0.15,
+    "min_quality": 15,
+    "min_tracked_features": 8,
+    "optical_flow_pixel_scale": 10.0,
+    "outlier_reject_mad": 3.0,
     "preprocess": {
       "clahe_clip": 2.0,
       "clahe_tile": 8,
@@ -96,50 +106,60 @@
       "saturation_threshold": 245
     },
     "publish_hz": 50,
-    "quality_ema_alpha": 0.2,
+    "px4flow_feature_threshold": 40,
+    "px4flow_image_size": 64,
+    "px4flow_min_count": 10,
+    "px4flow_num_blocks": 5,
+    "px4flow_search_size": 4,
+    "px4flow_tile_size": 8,
+    "px4flow_value_threshold": 2000,
+    "quality_ema_alpha": 0.0,
+    "quality_mad_px": 1.0,
+    "quality_max": 255,
+    "quality_min": 0,
     "quality_mode": "requested",
+    "quality_motion_floor": 0.2,
     "quality_motion_px": 10.0,
-    "reseed_every_n_frames": 10
+    "reseed_every_n_frames": 5,
+    "send_hil_optical_flow": false,
+    "send_optical_flow": false,
+    "send_optical_flow_rad": true,
+    "spike_px": 120.0,
+    "temporal_window": 7
   },
   "gyro": {
     "axis_sign_x": 1.0,
     "axis_sign_y": 1.0,
     "axis_sign_z": 1.0,
+    "axis_swap_xy": false,
+    "backend": "ros1",
+    "frame": "ros_flu",
+    "topic": "/mavros/imu/data_raw",
     "use_autopilot_imu": true
   },
   "lidar": {
-    "ascii": {
-      "distance_command": "?LDF,0",
-      "init_command": "?P",
-      "max_read_len": 32,
-      "value_index": 0
-    },
-    "backend": "lw20_ascii",
-    "debug": false,
+    "backend": "ros1",
     "enabled": true,
-    "filter": {
-      "ema_alpha": 0.0,
-      "max_dt_s": 0.05,
-      "max_jump_m": 0.5,
-      "max_m": 50.0,
-      "max_speed_m_s": 50.0,
-      "median_window": 3,
-      "min_m": 0.05,
-      "reject_limit": 3,
-      "reset_s": 0.2
+    "mavlink": {
+      "orientation": 24
     },
-    "i2c_address": 102,
-    "i2c_bus": 1,
-    "poll_hz": 100,
-    "scale": 1.0
+    "poll_hz": 50,
+    "ros_timeout_s": 1.0,
+    "topic": "/distance_sensor"
   },
   "logging": {
+    "debug_gating": true,
     "print_hz": 5,
-    "print_raw_flow": false
+    "print_raw_flow": true,
+    "flight_log": {
+      "enabled": true,
+      "dir": "logs/simulation",
+      "file_prefix": "sim_flight",
+      "flush_interval_s": 1.0
+    }
   },
   "serial": {
-    "baudrate": 921600,
-    "compid": 197,
+    "compid": 195,
     "enabled": true,
     "imu_filter": {
       "max_age_s": 0.2,
@@ -148,22 +168,28 @@
       "temp_max_c": 150.0,
       "temp_min_c": -50.0
     },
-    "port": "/dev/ttyAMA0",
+    "imu_source": "attitude",
     "request_imu_stream": {
       "enabled": true,
       "message_ids": [
-        105,
-        26,
         30,
         31
       ],
       "method": "auto",
-      "rate_hz": 200,
+      "rate_hz": 100,
       "stream_id": 0
     },
     "sysid": 42,
     "target_compid": 1,
     "target_sysid": 1,
+    "transport": "udp",
+    "udp": {
+      "bind_host": "0.0.0.0",
+      "bind_port": 14030,
+      "learn_remote_from_rx": true,
+      "remote_host": "127.0.0.1",
+      "remote_port": 14280
+    },
     "yaw_buffer": {
       "max_samples": 6000
     }
@@ -174,7 +200,7 @@
     "camera_window_samples": 240,
     "enabled": true,
     "fps_max_hz": 130.0,
-    "fps_min_hz": 45.0,
+    "fps_min_hz": 10.0,
     "health": {
       "ema_alpha": 0.2,
       "max_abs_lag_s": 0.03,

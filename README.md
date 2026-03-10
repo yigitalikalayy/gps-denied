@@ -1,11 +1,57 @@
-## Raspberry Pi Optical Flow (PX4Flow-compatible)
+# gps-denied-navigation
 
-[![Build Status](https://travis-ci.org/PX4/Flow.svg?branch=master)](https://travis-ci.org/PX4/Flow)
+GPS‑denied navigation pipeline using optical flow, IMU gyro compensation, and range sensing. The system publishes MAVLink `OPTICAL_FLOW_RAD` and `DISTANCE_SENSOR` messages for PX4 EKF2 fusion.
 
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/PX4/Firmware?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+## Repo Layout
+```
+├── docs/
+├── src/
+│   ├── optical_flow/
+│   ├── sensors/
+│   └── mavlink_bridge/
+├── analysis/
+├── logs/
+│   ├── simulation/
+│   └── flights/
+├── datasets/
+│   └── bag_files/
+├── scripts/
+│   └── systemd/
+├── config.json
+└── config_sitl.json
+```
 
-Bu repo artık STM32 PX4Flow firmware’ini değil, **Raspberry Pi 5 + OV9281 + LW20b** ile çalışan ve otopilota **MAVLink `OPTICAL_FLOW_RAD`** gönderen uygulamayı içerir.
+## Quick Start (Simulation)
+```
+python3 scripts/run_optical_flow.py --config config_sitl.json
+```
 
-Uygulama klasörü: `rpi_flow/`
+If you prefer the shell wrapper (ROS sourcing + log file):
+```
+./scripts/px4flow_rpi.sh config_sitl.json
+```
 
-Kurulum/çalıştırma için `rpi_flow/README.md` dosyasına bak.
+## Quick Start (Real Hardware)
+```
+python3 scripts/run_optical_flow.py --config config.json
+```
+
+## Logging
+Per‑run CSV logs are written to:
+- Simulation: `logs/simulation/`
+- Real flights: `logs/flights/`
+
+Logging is configured under `logging.flight_log` in the config files.
+
+## Analysis
+Use the scripts under `analysis/` to compute basic metrics:
+```
+python3 analysis/feature_stats.py logs/simulation/
+python3 analysis/altitude_analysis.py logs/simulation/
+python3 analysis/drift_analysis.py logs/simulation/
+```
+
+## Docs
+- `docs/architecture.md` — system overview
+- `docs/optical_flow.md` — algorithm details
+- `docs/experiment_notes.md` — experiment template and tips
