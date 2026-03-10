@@ -155,7 +155,8 @@
       "enabled": true,
       "dir": "logs/simulation",
       "file_prefix": "sim_flight",
-      "flush_interval_s": 1.0
+      "flush_interval_s": 1.0,
+      "max_logs": 100
     }
   },
   "serial": {

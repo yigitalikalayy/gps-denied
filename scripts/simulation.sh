@@ -163,5 +163,29 @@ log_num=$((max_log + 1))
 log_file="$(printf "%s/log_%04d_%s.txt" "${LOG_DIR}" "${log_num}" "${timestamp}")"
 echo "[px4flow_rpi] logging to: ${log_file}"
 
-python3 -m optical_flow.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
+prune_logs() {
+  local keep="${1:-100}"
+  local files=()
+  local path
+  shopt -s nullglob
+  for path in "${LOG_DIR}"/log_*.txt; do
+    files+=("${path}")
+  done
+  shopt -u nullglob
+  if [ "${#files[@]}" -le "${keep}" ]; then
+    return
+  fi
+  IFS=$'\n' read -r -d '' -a sorted < <(printf '%s\n' "${files[@]}" | sort && printf '\0')
+  local remove_count=$(( ${#sorted[@]} - keep ))
+  if [ "${remove_count}" -le 0 ]; then
+    return
+  fi
+  for ((i=0; i<remove_count; i++)); do
+    rm -f "${sorted[$i]}" || true
+  done
+}
+
+prune_logs 100
+
+python3 -m algorithms.optical_flow.main --config "${CONFIG_PATH}" 2>&1 | tee -a "${log_file}"
 exit ${PIPESTATUS[0]}

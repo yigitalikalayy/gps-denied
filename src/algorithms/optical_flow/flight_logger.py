@@ -37,6 +37,7 @@ class FlightLogger:
         self._file_prefix = str(cfg.get("file_prefix", "flight")).strip() or "flight"
         self._base_dir = str(cfg.get("dir", "logs/flights")).strip() or "logs/flights"
         self._flush_interval_s = float(cfg.get("flush_interval_s", 1.0))
+        self._max_logs = int(cfg.get("max_logs", 100))
         self._last_flush = time.monotonic()
         self._writer = None
         self._fp = None
@@ -61,6 +62,7 @@ class FlightLogger:
         self._writer = csv.DictWriter(self._fp, fieldnames=self._fieldnames())
         self._writer.writeheader()
         self._fp.flush()
+        self._prune_old_logs()
 
     @staticmethod
     def _fieldnames() -> list[str]:
@@ -112,3 +114,30 @@ class FlightLogger:
                 pass
         self._fp = None
         self._writer = None
+
+    def _prune_old_logs(self) -> None:
+        if self._max_logs <= 0:
+            return
+        try:
+            entries = []
+            for name in os.listdir(self._base_dir):
+                if not name.startswith(f"{self._file_prefix}_") or not name.endswith(".csv"):
+                    continue
+                parts = name.split("_")
+                if len(parts) < 2:
+                    continue
+                try:
+                    num = int(parts[1])
+                except Exception:
+                    continue
+                entries.append((num, os.path.join(self._base_dir, name)))
+            if len(entries) <= self._max_logs:
+                return
+            entries.sort(key=lambda x: x[0])
+            for _, path in entries[:-self._max_logs]:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        except Exception:
+            return

@@ -4,7 +4,7 @@ import argparse
 import time
 from typing import Any
 
-from optical_flow.config import AppConfig
+from algorithms.optical_flow.config import AppConfig
 from sensors.lidar import LightwareLw20AsciiI2C, LightwareLw20BinaryI2C
 
 
