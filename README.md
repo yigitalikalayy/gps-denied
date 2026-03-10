@@ -17,31 +17,27 @@ GPS‑denied navigation pipeline using optical flow, IMU gyro compensation, and 
 │   └── bag_files/
 ├── scripts/
 │   └── systemd/
-└── config.json
+└── config_sitl.json
 ```
 
-## Quick Start (Real Hardware)
+## Quick Start (Simulation)
+Algorithm is started via the shell wrapper:
 ```
-python3 scripts/run_optical_flow.py --config config.json
-```
-
-Or with the shell wrapper:
-```
-./scripts/executor.sh config.json
+./scripts/simulation.sh config_sitl.json
 ```
 
 ## Logging
 Per‑run CSV logs are written to:
-- `logs/flights/`
+- `logs/simulation/`
 
-Logging is configured under `logging.flight_log` in `config.json`.
+Logging is configured under `logging.flight_log` in `config_sitl.json`.
 
 ## Analysis
 Use the scripts under `analysis/` to compute basic metrics:
 ```
-python3 analysis/feature_stats.py logs/flights/
-python3 analysis/altitude_analysis.py logs/flights/
-python3 analysis/drift_analysis.py logs/flights/
+python3 analysis/feature_stats.py logs/simulation/
+python3 analysis/altitude_analysis.py logs/simulation/
+python3 analysis/drift_analysis.py logs/simulation/
 ```
 
 ## Docs
