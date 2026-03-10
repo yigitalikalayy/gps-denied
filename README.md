@@ -27,7 +27,7 @@ python3 scripts/run_optical_flow.py --config config.json
 
 Or with the shell wrapper:
 ```
-./scripts/px4flow_rpi.sh config.json
+./scripts/executor.sh config.json
 ```
 
 ## Logging
