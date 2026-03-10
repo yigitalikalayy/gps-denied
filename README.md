@@ -17,7 +17,6 @@ GPS‑denied navigation pipeline using optical flow, IMU gyro compensation, and 
 │   └── bag_files/
 ├── scripts/
 │   └── systemd/
-├── config.json
 └── config_sitl.json
 ```
 
