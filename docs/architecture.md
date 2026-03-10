@@ -12,7 +12,7 @@ This repository implements a GPS‑denied navigation pipeline based on optical f
 6. **MAVLink output** publishes `OPTICAL_FLOW_RAD` and `DISTANCE_SENSOR` at the configured rate.
 
 ## Core Components
-- `src/optical_flow/`
+- `src/algorithms/optical_flow/`
   - `camera.py`: frame acquisition + camera calibration interface.
   - `flow_estimator.py`: KLT/FAST tracking, outlier filtering.
   - `time_sync.py`: motion‑based time alignment (optional).

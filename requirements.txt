@@ -1,7 +1,10 @@
-numpy
-opencv-python
-pyserial
-smbus2
-# Optional (recommended on Raspberry Pi OS with libcamera)
+numpy>=1.23
+opencv-python>=4.5
+pyserial>=3.5
+smbus2>=0.4
+
+# Optional (Raspberry Pi camera stack / libcamera)
 picamera2
 
+# Optional (ROS backends are installed from the ROS distro, not pip):
+# rclpy, rospy, sensor_msgs

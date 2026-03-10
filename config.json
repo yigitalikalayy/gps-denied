@@ -162,7 +162,8 @@
       "enabled": true,
       "dir": "logs/flights",
       "file_prefix": "flight",
-      "flush_interval_s": 1.0
+      "flush_interval_s": 1.0,
+      "max_logs": 100
     }
   }
 }

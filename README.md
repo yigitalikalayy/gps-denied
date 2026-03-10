@@ -6,7 +6,8 @@ GPS‑denied navigation pipeline using optical flow, IMU gyro compensation, and 
 ```
 ├── docs/
 ├── src/
-│   ├── optical_flow/
+│   └── algorithms/
+│       └── optical_flow/
 │   ├── sensors/
 │   └── mavlink_bridge/
 ├── analysis/

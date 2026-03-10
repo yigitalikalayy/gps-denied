@@ -20,3 +20,26 @@
 - **Low texture**: increase feature count or lower `feature_quality`.
 - **Blur / fast motion**: raise RANSAC threshold slightly.
 - **Too many outliers**: lower RANSAC threshold or increase MAD rejection.
+
+## Frame Alignment & Calibration
+The pipeline relies on consistent axis mapping between camera flow, IMU gyro, and PX4 body frame.
+
+**Camera frame (image) conventions**
+- Image X: right, Image Y: down (standard image coordinates).
+- Downward‑facing camera: forward motion produces downward pixel motion; rightward motion produces leftward pixel motion.
+
+**Alignment controls (config)**
+- `flow.axis_swap_xy`: swap flow axes if camera is rotated 90° relative to body.
+- `flow.axis_sign_x`, `flow.axis_sign_y`: flip flow signs to match PX4 body frame expectations.
+- `gyro.axis_swap_xy`, `gyro.axis_sign_*`: map IMU gyro to the same body frame.
+- `gyro.frame`: set to `ros_flu` (ROS IMU) or `px4_frd` as appropriate.
+
+**Calibration**
+- Intrinsics are supplied via `camera.calibration` in `config.json` (real camera).
+- Any change in lens or mounting angle requires updating focal length and alignment signs.
+
+**Quick validation**
+1. Move the vehicle forward: flow should be consistent with forward motion.
+2. Move right: flow should be consistent with rightward motion.
+3. Yaw in place: flow should be dominated by gyro compensation.
+If signs are inverted, adjust `axis_sign_*` and re‑test.

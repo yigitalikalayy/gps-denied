@@ -9,6 +9,6 @@ if "--config" not in sys.argv:
     default_cfg = os.path.join(REPO_ROOT, "config.json")
     sys.argv.extend(["--config", default_cfg])
 
-from optical_flow.main import main  # noqa: E402
+from algorithms.optical_flow.main import main  # noqa: E402
 
 raise SystemExit(main())
