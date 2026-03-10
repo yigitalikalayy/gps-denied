@@ -31,6 +31,16 @@ class OpticalFlowEstimator:
         self._ransac_thresh_px = float(cfg.get("lk_ransac_thresh_px", 2.0))
         self._ransac_confidence = float(cfg.get("lk_ransac_confidence", 0.99))
         self._ransac_max_iters = int(cfg.get("lk_ransac_max_iters", 2000))
+        self._ransac_adaptive = bool(cfg.get("lk_ransac_adaptive", False))
+        self._ransac_thresh_min_px = float(cfg.get("lk_ransac_thresh_min_px", self._ransac_thresh_px))
+        self._ransac_thresh_max_px = float(cfg.get("lk_ransac_thresh_max_px", self._ransac_thresh_px))
+        self._ransac_thresh_k = float(cfg.get("lk_ransac_thresh_k", 2.5))
+        self._ransac_thresh_bias = float(cfg.get("lk_ransac_thresh_bias", 0.3))
+        self._ransac_motion_scale = float(cfg.get("lk_ransac_motion_scale", 0.02))
+        if self._ransac_thresh_min_px < 0.0:
+            self._ransac_thresh_min_px = 0.0
+        if self._ransac_thresh_max_px < self._ransac_thresh_min_px:
+            self._ransac_thresh_max_px = self._ransac_thresh_min_px
         self._reseed_every = int(cfg.get("reseed_every_n_frames", 10))
         self._min_tracked = int(cfg.get("min_tracked_features", 10))
         self._quality_mode = str(cfg.get("quality_mode", "max_features")).strip().lower()
@@ -67,6 +77,35 @@ class OpticalFlowEstimator:
         self._pc_win = None
         self._fast = None
         self._k = None
+
+    def _adaptive_ransac_thresh(self, dx: Any, dy: Any) -> float:
+        if not self._ransac_adaptive:
+            return float(self._ransac_thresh_px)
+        try:
+            import numpy as np  # type: ignore
+
+            dx_med = float(np.median(dx))
+            dy_med = float(np.median(dy))
+            residual = np.hypot(dx - dx_med, dy - dy_med)
+            r_med = float(np.median(residual))
+            mad = float(np.median(np.abs(residual - r_med)))
+            sigma = 1.4826 * mad
+            if not math.isfinite(sigma):
+                return float(self._ransac_thresh_px)
+            motion_mag = float(math.hypot(dx_med, dy_med))
+            thr = self._ransac_thresh_bias + (self._ransac_thresh_k * sigma) + (
+                self._ransac_motion_scale * motion_mag
+            )
+            if not math.isfinite(thr):
+                return float(self._ransac_thresh_px)
+            return float(
+                min(
+                    self._ransac_thresh_max_px,
+                    max(self._ransac_thresh_min_px, thr),
+                )
+            )
+        except Exception:
+            return float(self._ransac_thresh_px)
 
     def set_camera_intrinsics(self, camera_matrix: Any | None) -> None:
         import numpy as np  # type: ignore
@@ -361,11 +400,12 @@ class OpticalFlowEstimator:
         inlier_mask = None
         if self._ransac_enable and tracked >= max(6, self._min_tracked):
             try:
+                ransac_thresh = self._adaptive_ransac_thresh(dx, dy)
                 model, inliers = cv2.estimateAffinePartial2D(
                     p0g,
                     p1g,
                     method=cv2.RANSAC,
-                    ransacReprojThreshold=max(0.5, self._ransac_thresh_px),
+                    ransacReprojThreshold=max(0.5, ransac_thresh),
                     confidence=max(0.5, min(0.9999, self._ransac_confidence)),
                     maxIters=max(200, self._ransac_max_iters),
                 )
