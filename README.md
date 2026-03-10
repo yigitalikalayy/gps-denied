@@ -28,7 +28,7 @@ python3 scripts/run_optical_flow.py --config config_sitl.json
 
 If you prefer the shell wrapper (ROS sourcing + log file):
 ```
-./scripts/px4flow_rpi.sh config_sitl.json
+./scripts/simulation.sh config_sitl.json
 ```
 
 ## Quick Start (Real Hardware)
