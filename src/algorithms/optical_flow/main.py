@@ -104,10 +104,18 @@ def main() -> int:
     axis_sign_x = float(flow_cfg.get("axis_sign_x", 1.0))
     axis_sign_y = float(flow_cfg.get("axis_sign_y", -1.0))
     if axis_mode in ("gazebo_plugin", "px4flow_plugin", "plugin"):
-        axis_swap_xy = False
-        axis_sign_x = 1.0
-        axis_sign_y = 1.0
-        print("[px4flow_rpi] axis_mode=gazebo_plugin (swap_xy=false sign_x=+1 sign_y=+1)")
+        # Only override when the config does not explicitly provide axis mapping.
+        if "axis_swap_xy" not in flow_cfg:
+            axis_swap_xy = False
+        if "axis_sign_x" not in flow_cfg:
+            axis_sign_x = 1.0
+        if "axis_sign_y" not in flow_cfg:
+            axis_sign_y = 1.0
+        print(
+            "[px4flow_rpi] axis_mode=gazebo_plugin "
+            f"(swap_xy={'true' if axis_swap_xy else 'false'} "
+            f"sign_x={axis_sign_x:+.1f} sign_y={axis_sign_y:+.1f})"
+        )
     quality_ema_alpha = float(flow_cfg.get("quality_ema_alpha", 0.0))
     quality_ema_alpha = max(0.0, min(1.0, quality_ema_alpha))
 
