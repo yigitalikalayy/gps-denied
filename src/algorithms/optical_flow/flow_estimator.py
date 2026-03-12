@@ -78,6 +78,35 @@ class OpticalFlowEstimator:
         self._fast = None
         self._k = None
 
+    def apply_tuning(self, params: dict[str, Any]) -> None:
+        try:
+            if "feature_max" in params:
+                self._max_features = max(1, int(params["feature_max"]))
+            if "feature_quality" in params:
+                self._feature_quality = max(1e-6, float(params["feature_quality"]))
+            if "lk_win_size" in params:
+                self._win_size = max(5, int(params["lk_win_size"]))
+            if "lk_max_level" in params:
+                self._max_level = max(0, int(params["lk_max_level"]))
+            if "outlier_reject_mad" in params:
+                self._mad_k = max(0.1, float(params["outlier_reject_mad"]))
+            if "lk_ransac_thresh_max_px" in params:
+                self._ransac_thresh_max_px = max(0.1, float(params["lk_ransac_thresh_max_px"]))
+                if self._ransac_thresh_min_px > self._ransac_thresh_max_px:
+                    self._ransac_thresh_min_px = self._ransac_thresh_max_px
+            if "lk_ransac_thresh_min_px" in params:
+                self._ransac_thresh_min_px = max(0.0, float(params["lk_ransac_thresh_min_px"]))
+                if self._ransac_thresh_max_px < self._ransac_thresh_min_px:
+                    self._ransac_thresh_max_px = self._ransac_thresh_min_px
+            if "reseed_every_n_frames" in params:
+                self._reseed_every = max(1, int(params["reseed_every_n_frames"]))
+            if "min_tracked_features" in params:
+                self._min_tracked = max(4, int(params["min_tracked_features"]))
+            if "min_inlier_ratio" in params:
+                self._min_inlier_ratio = max(0.0, float(params["min_inlier_ratio"]))
+        except Exception:
+            return
+
     def _adaptive_ransac_thresh(self, dx: Any, dy: Any) -> float:
         if not self._ransac_adaptive:
             return float(self._ransac_thresh_px)

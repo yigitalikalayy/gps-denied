@@ -121,6 +121,15 @@
     "quality_motion_floor": 0.2,
     "quality_motion_px": 10.0,
     "reseed_every_n_frames": 5,
+    "adaptive_tuning": {
+      "enabled": true,
+      "low_alt_m": 20.0,
+      "high_alt_m": 60.0,
+      "min_scale": 1.0,
+      "max_scale": 2.5,
+      "update_hz": 5.0,
+      "log_changes": true
+    },
     "send_hil_optical_flow": false,
     "send_optical_flow": false,
     "send_optical_flow_rad": true,

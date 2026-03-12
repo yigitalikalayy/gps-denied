@@ -21,6 +21,12 @@
 - **Blur / fast motion**: raise RANSAC threshold slightly.
 - **Too many outliers**: lower RANSAC threshold or increase MAD rejection.
 
+## Adaptive Tuning (Height‑Based)
+When enabled (`flow.adaptive_tuning.enabled`), parameters are adjusted based on altitude:
+- Higher altitude increases feature count and LK window size.
+- Quality/inlier thresholds become more tolerant to prevent tracking loss.
+This helps stabilize tracking as pixel motion shrinks with height.
+
 ## Frame Alignment & Calibration
 The pipeline relies on consistent axis mapping between camera flow, IMU gyro, and PX4 body frame.
 

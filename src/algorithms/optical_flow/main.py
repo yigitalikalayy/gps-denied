@@ -138,6 +138,82 @@ def main() -> int:
     cam = Camera(cam_cfg)
     flow = OpticalFlowEstimator(flow_cfg)
 
+    adaptive_cfg = flow_cfg.get("adaptive_tuning", {}) if isinstance(flow_cfg.get("adaptive_tuning", {}), dict) else {}
+    adaptive_enabled = bool(adaptive_cfg.get("enabled", False))
+    adaptive_low_m = float(adaptive_cfg.get("low_alt_m", 20.0))
+    adaptive_high_m = float(adaptive_cfg.get("high_alt_m", 60.0))
+    adaptive_min_scale = float(adaptive_cfg.get("min_scale", 1.0))
+    adaptive_max_scale = float(adaptive_cfg.get("max_scale", 2.5))
+    adaptive_update_hz = float(adaptive_cfg.get("update_hz", 5.0))
+    adaptive_log = bool(adaptive_cfg.get("log_changes", True))
+
+    base_feature_max = int(flow_cfg.get("feature_max", 500))
+    base_feature_quality = float(flow_cfg.get("feature_quality", 0.001))
+    base_lk_win = int(flow_cfg.get("lk_win_size", 21))
+    base_lk_level = int(flow_cfg.get("lk_max_level", 3))
+    base_reseed = int(flow_cfg.get("reseed_every_n_frames", 10))
+    base_min_tracked = int(flow_cfg.get("min_tracked_features", 10))
+    base_min_inlier_ratio = float(flow_cfg.get("min_inlier_ratio", 0.0))
+    base_mad = float(flow_cfg.get("outlier_reject_mad", 3.5))
+    base_ransac_max = float(flow_cfg.get("lk_ransac_thresh_max_px", 3.0))
+
+    feature_max_limit = int(adaptive_cfg.get("feature_max_limit", max(base_feature_max, int(base_feature_max * adaptive_max_scale))))
+    feature_quality_min = float(adaptive_cfg.get("feature_quality_min", max(1e-6, base_feature_quality / max(1.0, adaptive_max_scale))))
+    lk_win_size_max = int(adaptive_cfg.get("lk_win_size_max", max(base_lk_win, base_lk_win + 2)))
+    lk_win_step = int(adaptive_cfg.get("lk_win_step", 4))
+    lk_level_max = int(adaptive_cfg.get("lk_max_level_max", max(base_lk_level, base_lk_level + 1)))
+    lk_level_step = int(adaptive_cfg.get("lk_level_step", 1))
+    min_tracked_min = int(adaptive_cfg.get("min_tracked_min", max(4, int(base_min_tracked / max(1.0, adaptive_max_scale)))))
+    min_inlier_ratio_min = float(
+        adaptive_cfg.get(
+            "min_inlier_ratio_min",
+            0.05 if base_min_inlier_ratio <= 0.0 else base_min_inlier_ratio / max(1.0, adaptive_max_scale),
+        )
+    )
+    outlier_mad_max = float(adaptive_cfg.get("outlier_mad_max", max(base_mad, base_mad * adaptive_max_scale)))
+    ransac_thresh_max_px_max = float(
+        adaptive_cfg.get("lk_ransac_thresh_max_px_max", max(base_ransac_max, base_ransac_max * adaptive_max_scale))
+    )
+    reseed_min = int(adaptive_cfg.get("reseed_min", max(2, int(base_reseed / max(1.0, adaptive_max_scale)))))
+
+    adaptive_update_s = 1.0 / max(1.0, adaptive_update_hz)
+    adaptive_last_t = 0.0
+    adaptive_last_scale = None
+
+    def _adaptive_scale(height_m: float) -> float:
+        if height_m <= adaptive_low_m:
+            return adaptive_min_scale
+        if height_m >= adaptive_high_m:
+            return adaptive_max_scale
+        span = max(1e-3, adaptive_high_m - adaptive_low_m)
+        return adaptive_min_scale + ((height_m - adaptive_low_m) / span) * (adaptive_max_scale - adaptive_min_scale)
+
+    def _adaptive_params(height_m: float) -> tuple[dict[str, float | int], float]:
+        scale = _adaptive_scale(height_m)
+        feature_max = min(feature_max_limit, int(round(base_feature_max * scale)))
+        feature_quality = max(feature_quality_min, base_feature_quality / max(1.0, scale))
+        lk_win = min(lk_win_size_max, int(round(base_lk_win + (scale - 1.0) * lk_win_step)))
+        lk_level = min(lk_level_max, int(round(base_lk_level + (scale - 1.0) * lk_level_step)))
+        reseed = max(reseed_min, int(round(base_reseed / max(1.0, scale))))
+        min_tracked = max(min_tracked_min, int(round(base_min_tracked / max(1.0, scale))))
+        min_inlier = max(min_inlier_ratio_min, base_min_inlier_ratio / max(1.0, scale)) if base_min_inlier_ratio > 0.0 else 0.0
+        outlier_mad = min(outlier_mad_max, base_mad * max(1.0, scale))
+        ransac_max = min(ransac_thresh_max_px_max, base_ransac_max * max(1.0, scale))
+        return (
+            {
+                "feature_max": feature_max,
+                "feature_quality": feature_quality,
+                "lk_win_size": lk_win,
+                "lk_max_level": lk_level,
+                "reseed_every_n_frames": reseed,
+                "min_tracked_features": min_tracked,
+                "min_inlier_ratio": min_inlier,
+                "outlier_reject_mad": outlier_mad,
+                "lk_ransac_thresh_max_px": ransac_max,
+            },
+            scale,
+        )
+
     serial_enabled = bool(serial_cfg.get("enabled", True))
     if serial_enabled:
         from mavlink_bridge.mavlink_bridge import MavlinkBridge  # local import: allow PC testing without pyserial
@@ -459,6 +535,22 @@ def main() -> int:
                         "time_sync initialized "
                         f"nominal_fps={nominal_fps:.2f}Hz source={'runtime' if sync_fps_samples else 'config_fallback'}"
                     )
+
+            if adaptive_enabled and (fr.t_monotonic - adaptive_last_t) >= adaptive_update_s:
+                with lidar_lock:
+                    adapt_height = last_lidar_used
+                if adapt_height is not None and math.isfinite(float(adapt_height)):
+                    params, scale = _adaptive_params(float(adapt_height))
+                    flow.apply_tuning(params)
+                    if adaptive_log and (adaptive_last_scale is None or abs(scale - adaptive_last_scale) >= 0.1):
+                        print(
+                            "[px4flow_rpi] adaptive_tuning"
+                            f" h={float(adapt_height):.2f}m scale={scale:.2f}"
+                            f" feat_max={params['feature_max']} lk_win={params['lk_win_size']}"
+                            f" min_tracked={params['min_tracked_features']}"
+                        )
+                    adaptive_last_scale = scale
+                adaptive_last_t = fr.t_monotonic
 
             r = flow.estimate(prev.gray, fr.gray)
 
