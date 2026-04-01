@@ -26,7 +26,7 @@ This branch is configured for a companion-computer topology where `mavlink-route
 ## Quick Start (Real Hardware)
 Algorithm is started via the shell wrapper:
 ```
-./scripts/executor.sh config.json
+./scripts/executor_mavlink_router_udp.sh config.json
 ```
 
 Expected runtime topology:

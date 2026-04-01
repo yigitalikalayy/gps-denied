@@ -41,7 +41,7 @@ Next Actions:
 4. Stop with `Ctrl+C` after the simulation ends.
 
 ### Real Hardware
-1. `executor.sh` is installed as a systemd service on the Raspberry Pi.
+1. `executor_mavlink_router_udp.sh` is installed as a systemd service on the Raspberry Pi.
 2. The service starts on power‑up and stops on power‑down (or via `systemctl stop`).
 
 ## Operational Notes
