@@ -564,8 +564,9 @@ def main() -> int:
                 if distance_valid:
                     range_delay_us = int(time_delta_distance_us)
 
+                frame_timestamp_s = getattr(fr, "t_stamp_s", None)
                 flight_logger.log(
-                    timestamp_s=float(fr.t_stamp_s if fr.t_stamp_s is not None else fr.t_monotonic),
+                    timestamp_s=float(frame_timestamp_s if frame_timestamp_s is not None else fr.t_monotonic),
                     frame_id=int(frame_count),
                     feature_count=feature_count,
                     tracked_feature_count=tracked_features,
