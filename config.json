@@ -1,12 +1,24 @@
 {
-  "serial": {
+  "mavlink": {
     "enabled": true,
-    "port": "/dev/ttyAMA0",
-    "baudrate": 921600,
+    "transport": "udp",
     "sysid": 42,
     "compid": 197,
     "target_sysid": 1,
     "target_compid": 1,
+    "serial": {
+      "device": "/dev/ttyAMA0",
+      "baudrate": 921600,
+      "timeout_s": 0.01
+    },
+    "udp": {
+      "host": "127.0.0.1",
+      "port": 14560,
+      "bind_host": "127.0.0.1",
+      "bind_port": 14558,
+      "timeout_s": 0.05,
+      "recv_buffer_bytes": 1048576
+    },
     "request_imu_stream": {
       "enabled": true,
       "stream_id": 0,

@@ -72,7 +72,13 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = AppConfig.load(args.config)
-    serial_cfg = cfg.section("serial")
+    raw_mavlink_cfg = cfg.raw.get("mavlink", None)
+    if raw_mavlink_cfg is None:
+        mavlink_cfg = cfg.section("serial")
+    elif isinstance(raw_mavlink_cfg, dict):
+        mavlink_cfg = raw_mavlink_cfg
+    else:
+        raise ValueError("config section 'mavlink' must be an object")
     cam_cfg = cfg.section("camera")
     flow_cfg = cfg.section("flow")
     gyro_cfg = cfg.section("gyro")
@@ -120,16 +126,16 @@ def main() -> int:
     flight_logger = FlightLogger(flight_log_cfg)
 
     # MAVLink message uses sensor_id (u8). PX4Flow uses a param; here we default to sysid.
-    sensor_id = int(serial_cfg.get("sysid", 42)) & 0xFF
+    sensor_id = int(mavlink_cfg.get("sysid", 42)) & 0xFF
 
     cam = Camera(cam_cfg)
     flow = OpticalFlowEstimator(flow_cfg)
 
-    serial_enabled = bool(serial_cfg.get("enabled", True))
-    if serial_enabled:
+    mavlink_enabled = bool(mavlink_cfg.get("enabled", True))
+    if mavlink_enabled:
         from mavlink_bridge.mavlink_bridge import MavlinkBridge  # local import: allow PC testing without pyserial
 
-        bridge = MavlinkBridge(serial_cfg)
+        bridge = MavlinkBridge(mavlink_cfg)
     else:
         class _NullBridge:
             def read_gyro(self):
@@ -142,6 +148,9 @@ def main() -> int:
                 return _G()
 
             def send_optical_flow_rad(self, **_kwargs):
+                return None
+
+            def send_distance_sensor(self, **_kwargs):
                 return None
 
             def read_yaw_samples(self, max_samples: int = 0, max_age_s: float = 0.0):
@@ -159,7 +168,7 @@ def main() -> int:
     sync_cls = None
     sync_min_geom_inliers = max(0, int(sync_cfg.get("min_geom_inliers", 8)))
     sync_max_abs_yaw_delta = max(0.0, float(sync_cfg.get("max_abs_yaw_delta_rad", 0.05)))
-    if sync_enabled and serial_enabled:
+    if sync_enabled and mavlink_enabled:
         from .time_sync import MotionBasedTimeSync
 
         sync_cls = MotionBasedTimeSync
@@ -515,7 +524,7 @@ def main() -> int:
                 quality = int(round(quality_acc / max(1, quality_n)))
                 time_usec = _monotonic_to_time_usec(t0_mono, t0_time, now)
                 time_boot_ms = _monotonic_to_time_boot_ms(t0_mono, now)
-                if serial_enabled:
+                if mavlink_enabled:
                     att_time = bridge.read_time_boot_ms_with_wall()
                     if att_time is not None:
                         att_boot_ms, att_wall = att_time

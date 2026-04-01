@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import collections
 import math
+import socket
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
-import serial  # type: ignore
+try:
+    import serial  # type: ignore
+except ImportError:  # pragma: no cover - optional when using UDP transport
+    serial = None
 
 from .mavlink_messages import (
     Attitude,
@@ -44,6 +48,67 @@ class ImuYawSample:
     t_wall: float
 
 
+class _SerialTransport:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        if serial is None:
+            raise RuntimeError("pyserial is required for serial MAVLink transport")
+
+        serial_cfg = cfg.get("serial", {}) if isinstance(cfg.get("serial", {}), dict) else {}
+        device = serial_cfg.get("device", cfg.get("port", "/dev/ttyAMA1"))
+        baudrate = serial_cfg.get("baudrate", cfg.get("baudrate", 921600))
+        timeout_s = serial_cfg.get("timeout_s", cfg.get("timeout_s", 0.01))
+
+        self._serial = serial.Serial(str(device), int(baudrate), timeout=float(timeout_s))
+
+    def read(self, size: int) -> bytes:
+        return bytes(self._serial.read(size))
+
+    def write(self, data: bytes) -> None:
+        self._serial.write(data)
+
+    def close(self) -> None:
+        self._serial.close()
+
+
+class _UdpTransport:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        udp_cfg = cfg.get("udp", {}) if isinstance(cfg.get("udp", {}), dict) else {}
+        host = str(udp_cfg.get("host", cfg.get("host", "127.0.0.1")))
+        port = int(udp_cfg.get("port", cfg.get("udp_port", 14560)))
+        bind_host = str(udp_cfg.get("bind_host", cfg.get("bind_host", "0.0.0.0")))
+        bind_port = int(udp_cfg.get("bind_port", cfg.get("bind_port", 0)))
+        timeout_s = float(udp_cfg.get("timeout_s", cfg.get("timeout_s", 0.05)))
+        recv_buffer = int(udp_cfg.get("recv_buffer_bytes", cfg.get("recv_buffer_bytes", 1 << 20)))
+
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if recv_buffer > 0:
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, recv_buffer)
+        self._sock.bind((bind_host, bind_port))
+        self._sock.connect((host, port))
+        self._sock.settimeout(timeout_s)
+
+    def read(self, size: int) -> bytes:
+        try:
+            return bytes(self._sock.recv(size))
+        except socket.timeout:
+            return b""
+
+    def write(self, data: bytes) -> None:
+        self._sock.send(data)
+
+    def close(self) -> None:
+        self._sock.close()
+
+
+def _build_transport(cfg: dict[str, Any]) -> _SerialTransport | _UdpTransport:
+    transport = str(cfg.get("transport", "serial")).strip().lower()
+    if transport == "serial":
+        return _SerialTransport(cfg)
+    if transport == "udp":
+        return _UdpTransport(cfg)
+    raise ValueError(f"unsupported MAVLink transport: {transport}")
+
+
 class MavlinkBridge:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self._port = str(cfg.get("port", "/dev/ttyAMA1"))
@@ -55,7 +120,7 @@ class MavlinkBridge:
 
         self._seq = 0
         self._parser = Mavlink1Parser()
-        self._ser = serial.Serial(self._port, self._baud, timeout=0.01)
+        self._transport = _build_transport(cfg)
 
         self._gyro = GyroState()
         self._gyro_lock = threading.Lock()
@@ -128,14 +193,14 @@ class MavlinkBridge:
         except Exception:
             pass
         try:
-            self._ser.close()
+            self._transport.close()
         except Exception:
             pass
 
     def _rx_loop(self) -> None:
         while not self._stop:
             try:
-                data = self._ser.read(512)
+                data = self._transport.read(512)
             except Exception:
                 time.sleep(0.01)
                 continue
@@ -186,7 +251,7 @@ class MavlinkBridge:
     def _send(self, msgid: int, payload: bytes, crc_extra: int) -> None:
         pkt = mavlink1_pack(msgid, payload, sysid=self._sysid, compid=self._compid, seq=self._seq, crc_extra=crc_extra)
         self._seq = (self._seq + 1) & 0xFF
-        self._ser.write(pkt)
+        self._transport.write(pkt)
 
     def request_imu_stream(self) -> None:
         stream_id = int(self._imu_req_cfg.get("stream_id", 0))

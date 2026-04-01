@@ -1,6 +1,7 @@
 [Unit]
 Description=Raspberry Pi Optical Flow to PX4 (OPTICAL_FLOW_RAD)
-After=network.target
+Wants=mavlink-router.service
+After=network.target mavlink-router.service
 
 [Service]
 Type=simple
